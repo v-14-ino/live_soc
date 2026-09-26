@@ -279,4 +279,10 @@ export const api = {
       deliveries: WebhookDelivery[];
       total: number;
     }>(`/api/webhooks/${encodeURIComponent(webhookId)}/deliveries?limit=${limit}`),
+
+  clearWebhookDeliveries: (webhookId: string, olderThanDays?: number) =>
+    http<{ ok: boolean; webhookId: string; deleted: number }>(
+      `/api/webhooks/${encodeURIComponent(webhookId)}/deliveries${olderThanDays ? `?olderThanDays=${olderThanDays}` : ""}`,
+      { method: "DELETE" },
+    ),
 };

@@ -21,6 +21,7 @@ import {
   RefreshCw,
   ChevronDown,
   ChevronRight,
+  Trash2,
 } from "lucide-react";
 import { toast } from "sonner";
 
@@ -47,6 +48,7 @@ export function WebhookDeliveryHistory({
   const [deliveries, setDeliveries] = useState<WebhookDelivery[]>([]);
   const [total, setTotal] = useState(0);
   const [loading, setLoading] = useState(false);
+  const [clearing, setClearing] = useState(false);
   const [expandedIds, setExpandedIds] = useState<Set<string>>(new Set());
 
   const fetchDeliveries = useCallback(async () => {
@@ -68,6 +70,23 @@ export function WebhookDeliveryHistory({
       fetchDeliveries();
     }
   }, [open, webhookId, fetchDeliveries]);
+
+  const handleClear = useCallback(async () => {
+    if (!webhookId) return;
+    if (!window.confirm(`Clear all ${total} delivery records for "${webhookName}"? This cannot be undone.`)) return;
+    setClearing(true);
+    try {
+      const res = await api.clearWebhookDeliveries(webhookId);
+      toast.success(`Cleared ${res.deleted} delivery record(s)`);
+      setDeliveries([]);
+      setTotal(0);
+      setExpandedIds(new Set());
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Failed to clear deliveries");
+    } finally {
+      setClearing(false);
+    }
+  }, [webhookId, webhookName, total]);
 
   const toggleExpand = (id: string) => {
     setExpandedIds((prev) => {
@@ -98,16 +117,35 @@ export function WebhookDeliveryHistory({
           <span className="font-mono-data text-[10px] text-muted-foreground">
             Showing last {deliveries.length} of {total}
           </span>
-          <Button
-            size="sm"
-            variant="ghost"
-            className="h-7 gap-1.5 text-[11px]"
-            onClick={fetchDeliveries}
-            disabled={loading}
-          >
-            <RefreshCw className={`h-3 w-3 ${loading ? "animate-spin" : ""}`} />
-            Refresh
-          </Button>
+          <div className="flex items-center gap-1.5">
+            <Button
+              size="sm"
+              variant="ghost"
+              className="h-7 gap-1.5 text-[11px]"
+              onClick={fetchDeliveries}
+              disabled={loading}
+            >
+              <RefreshCw className={`h-3 w-3 ${loading ? "animate-spin" : ""}`} />
+              Refresh
+            </Button>
+            {deliveries.length > 0 && (
+              <Button
+                size="sm"
+                variant="ghost"
+                className="h-7 gap-1.5 text-[11px] text-[color:var(--soc-critical)] hover:text-[color:var(--soc-critical)]"
+                onClick={handleClear}
+                disabled={clearing}
+                title="Clear all delivery history for this webhook"
+              >
+                {clearing ? (
+                  <RefreshCw className="h-3 w-3 animate-spin" />
+                ) : (
+                  <Trash2 className="h-3 w-3" />
+                )}
+                Clear All
+              </Button>
+            )}
+          </div>
         </div>
 
         <ScrollArea className="h-[calc(90vh-160px)] soc-scrollbar">

@@ -22,9 +22,11 @@ import {
   XCircle,
   GitCompare,
   X,
+  Play,
   type LucideIcon,
 } from "lucide-react";
 import { useAppStore } from "@/lib/store";
+import { useReplayMode } from "@/hooks/use-replay-mode";
 import { api, type HistoryDetailResponse, type HistoryListResponse } from "@/lib/api-client";
 import { KpiCard } from "@/components/soc/kpi-card";
 import { SeverityBadge } from "@/components/soc/severity-badge";
@@ -1612,6 +1614,7 @@ function ActionsTab({
 }) {
   const setView = useAppStore((s) => s.setView);
   const [generating, setGenerating] = useState(false);
+  const replay = useReplayMode();
   const handleGenerate = async () => {
     setGenerating(true);
     try {
@@ -1624,6 +1627,16 @@ function ActionsTab({
       setGenerating(false);
     }
   };
+
+  const handleReplay = async () => {
+    onClose();
+    setView("monitor");
+    // Small delay to let the view switch render before starting replay
+    setTimeout(() => {
+      replay.start(session.id);
+    }, 300);
+  };
+
   return (
     <div className="flex flex-col gap-3">
       <SectionLabel>Actions</SectionLabel>
@@ -1657,6 +1670,41 @@ function ActionsTab({
                 Go to Reports
                 <ArrowRight className="h-3 w-3" />
               </Button>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      {/* Replay Live */}
+      <div className="rounded-md border border-[color:var(--soc-low)]/30 bg-[color:var(--soc-low)]/5 p-3">
+        <div className="flex items-start gap-2">
+          <Play className="mt-0.5 h-4 w-4 shrink-0 text-[color:var(--soc-low)]" />
+          <div className="min-w-0 flex-1">
+            <div className="font-mono-data text-[11px] font-semibold text-foreground">
+              Replay Live Mode
+            </div>
+            <p className="mt-0.5 text-[10px] text-muted-foreground">
+              Replay this session&apos;s {session.eventCount} events in real-time into the Live Monitor view.
+              KPIs, charts, threat map, and alerts will update as if monitoring were live.
+              Adjust playback speed in the Live Monitor during replay.
+            </p>
+            <div className="mt-2 flex flex-wrap items-center gap-2">
+              <Button
+                size="sm"
+                onClick={handleReplay}
+                disabled={replay.state === "loading" || session.eventCount === 0}
+                className="h-7 gap-1.5 text-[11px]"
+              >
+                {replay.state === "loading" ? (
+                  <RefreshCw className="h-3 w-3 animate-spin" />
+                ) : (
+                  <Play className="h-3 w-3" />
+                )}
+                {replay.state === "loading" ? "Loading…" : "Start Replay"}
+              </Button>
+              {session.eventCount === 0 && (
+                <span className="text-[10px] text-muted-foreground">No events to replay</span>
+              )}
             </div>
           </div>
         </div>

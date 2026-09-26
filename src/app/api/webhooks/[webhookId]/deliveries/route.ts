@@ -1,12 +1,14 @@
 // ============================================================
 // LiveSOC - /api/webhooks/[webhookId]/deliveries
 //
-// GET → delivery history for a webhook (paginated, newest first)
+// GET    → delivery history for a webhook (paginated, newest first)
+// DELETE → clear all deliveries for a webhook (or older than ?olderThanDays=N)
 // ============================================================
 
 import { NextRequest, NextResponse } from "next/server";
 import { db } from "@/lib/db";
 import { withApiHandler } from "@/lib/server/monitor-proxy";
+import { auditLog } from "@/lib/monitoring/audit";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -48,6 +50,31 @@ export const GET = withApiHandler(
       })),
       total,
     });
+  },
+  { module: "api.webhooks.deliveries" },
+);
+
+export const DELETE = withApiHandler(
+  async (req: NextRequest, ctx: { params: Promise<{ webhookId: string }> }) => {
+    const { webhookId } = await ctx.params;
+    const olderThanDaysStr = req.nextUrl.searchParams.get("olderThanDays");
+    const olderThanDays = olderThanDaysStr ? Number(olderThanDaysStr) : NaN;
+
+    let deleted: { count: number };
+    if (Number.isFinite(olderThanDays) && olderThanDays > 0) {
+      // Delete deliveries older than N days
+      const cutoff = new Date(Date.now() - olderThanDays * 24 * 60 * 60 * 1000);
+      deleted = await db.webhookDelivery.deleteMany({
+        where: { webhookId, calledAt: { lt: cutoff } },
+      });
+      await auditLog("info", "api.webhooks.deliveries", `Cleared ${deleted.count} deliveries older than ${olderThanDays}d for webhook`, { webhookId });
+    } else {
+      // Delete ALL deliveries for this webhook
+      deleted = await db.webhookDelivery.deleteMany({ where: { webhookId } });
+      await auditLog("warning", "api.webhooks.deliveries", `Cleared ALL ${deleted.count} deliveries for webhook`, { webhookId });
+    }
+
+    return NextResponse.json({ ok: true, webhookId, deleted: deleted.count });
   },
   { module: "api.webhooks.deliveries" },
 );
