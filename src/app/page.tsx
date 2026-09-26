@@ -12,14 +12,17 @@ import {
   ShieldCheck,
   Command as CommandIcon,
   BookOpen,
+  Keyboard,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useAppStore } from "@/lib/store";
 import { useMonitorWs } from "@/hooks/use-monitor-ws";
+import { useKeyboardShortcuts } from "@/hooks/use-keyboard-shortcuts";
 import { AuthWarning } from "@/components/soc/auth-warning";
 import { StatusDot } from "@/components/soc/status-dot";
 import { CommandPalette } from "@/components/soc/command-palette";
 import { DetectionRulesDialog } from "@/components/soc/detection-rules-dialog";
+import { KeyboardShortcutsDialog } from "@/components/soc/keyboard-shortcuts-dialog";
 import { LiveMonitorView } from "@/components/views/live-monitor-view";
 import { OffenseView } from "@/components/views/offense-view";
 import { DefenseView } from "@/components/views/defense-view";
@@ -59,6 +62,81 @@ export default function Home() {
 
   // Load settings on mount
   useSettingsLoader();
+
+  // Global keyboard shortcuts
+  const { showHelp, setShowHelp } = useKeyboardShortcuts({
+    onViewChange: (v) => setView(v),
+    getCurrentView: () => view,
+    onEventNavigate: (dir) => {
+      const s = useAppStore.getState();
+      if (!s.events.length) return;
+      const currentIdx = s.selectedEventId
+        ? s.events.findIndex((e) => e.eventId === s.selectedEventId)
+        : -1;
+      let nextIdx: number;
+      if (currentIdx === -1) {
+        nextIdx = 0;
+      } else if (dir === "next") {
+        nextIdx = Math.min(s.events.length - 1, currentIdx + 1);
+      } else {
+        nextIdx = Math.max(0, currentIdx - 1);
+      }
+      const next = s.events[nextIdx];
+      if (next) {
+        s.setSelectedEvent(next.eventId);
+        toast.info(`Event ${nextIdx + 1}/${s.events.length}: ${next.eventId}`, { duration: 1500 });
+      }
+    },
+    onAlertAck: () => {
+      const s = useAppStore.getState();
+      // Find first active alert
+      const alert = s.alerts.find((a) => a.status === "active");
+      if (!alert || !s.sessionId) {
+        toast.info("No active alert to acknowledge");
+        return;
+      }
+      import("@/lib/api-client").then(({ api }) => {
+        api.updateAlertStatus(s.sessionId!, alert.alertId, "acknowledged").then(() => {
+          s.updateAlertStatus(alert.alertId, "acknowledged");
+          toast.success("Alert acknowledged (A)");
+        }).catch(() => toast.error("Failed to acknowledge alert"));
+      });
+    },
+    onAlertResolve: () => {
+      const s = useAppStore.getState();
+      const alert = s.alerts.find((a) => a.status !== "resolved");
+      if (!alert || !s.sessionId) {
+        toast.info("No alert to resolve");
+        return;
+      }
+      import("@/lib/api-client").then(({ api }) => {
+        api.updateAlertStatus(s.sessionId!, alert.alertId, "resolved").then(() => {
+          s.updateAlertStatus(alert.alertId, "resolved");
+          toast.success("Alert resolved (R)");
+        }).catch(() => toast.error("Failed to resolve alert"));
+      });
+    },
+    onPauseToggle: () => {
+      const s = useAppStore.getState();
+      s.setPaused(!s.paused);
+      toast.info(s.paused ? "Stream resumed" : "Stream paused", { duration: 1200 });
+    },
+    onClearView: () => {
+      useAppStore.getState().clearLiveView();
+      toast.success("Live view cleared (C)");
+    },
+    onExportEvents: () => {
+      const s = useAppStore.getState();
+      if (!s.events.length) {
+        toast.info("No events to export");
+        return;
+      }
+      import("@/lib/export-utils").then(({ exportEventsCsv }) => {
+        exportEventsCsv(s.events.slice(0, 500), s.targetAddress || "live");
+        toast.success("Events exported (E)");
+      });
+    },
+  });
 
   // Periodic health check for "system online" indicator
   useEffect(() => {
@@ -251,6 +329,14 @@ export default function Home() {
               <span className="hidden sm:inline">Rules</span>
             </button>
             <button
+              onClick={() => setShowHelp(true)}
+              className="flex items-center gap-1.5 rounded-md border border-border/60 bg-card/40 px-2 py-1 font-mono-data text-[10px] uppercase tracking-wider text-muted-foreground transition-colors hover:bg-card/60 hover:text-foreground"
+              title="Show keyboard shortcuts (?)"
+            >
+              <Keyboard className="h-3 w-3" />
+              <span className="hidden sm:inline">Shortcuts</span>
+            </button>
+            <button
               onClick={() => {
                 // Trigger Cmd+K by dispatching a synthetic keyboard event
                 document.dispatchEvent(
@@ -290,6 +376,7 @@ export default function Home() {
       {/* Global overlays */}
       <CommandPalette onOpenRules={() => setRulesOpen(true)} />
       <DetectionRulesDialog open={rulesOpen} onOpenChange={setRulesOpen} />
+      <KeyboardShortcutsDialog open={showHelp} onOpenChange={setShowHelp} />
     </div>
   );
 }

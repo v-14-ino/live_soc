@@ -10,6 +10,7 @@ import {
   Search,
   ChevronDown,
   ChevronRight,
+  ChevronUp,
   Shield,
   Network as NetworkIcon,
   AlertTriangle,
@@ -21,8 +22,12 @@ import {
   Server,
   Info,
   CheckCircle,
+  CheckCheck,
+  ShieldCheck,
   RotateCcw,
   Eye,
+  Layers,
+  AlignJustify,
   LucideIcon,
 } from "lucide-react";
 import {
@@ -60,7 +65,7 @@ import {
 import { Skeleton } from "@/components/ui/skeleton";
 import { toast } from "sonner";
 import { cn } from "@/lib/utils";
-import { severityColor } from "@/lib/constants";
+import { severityColor, SEVERITY_ORDER } from "@/lib/constants";
 import type {
   Severity,
   SecurityEvent,
@@ -770,7 +775,10 @@ function LiveSecurityLog() {
   const handleEventClick = useCallback((e: SecurityEvent) => {
     setSelectedEvent(e);
     setDrawerOpen(true);
+    useAppStore.getState().setSelectedEvent(e.eventId);
   }, []);
+
+  const selectedEventId = useAppStore((s) => s.selectedEventId);
 
   return (
     <Panel
@@ -909,7 +917,11 @@ function LiveSecurityLog() {
                   <tr
                     key={e.id}
                     onClick={() => handleEventClick(e)}
-                    className="cursor-pointer border-b border-border/20 transition-colors hover:bg-accent/30 animate-fade-in-up"
+                    className={`cursor-pointer border-b border-border/20 transition-colors hover:bg-accent/30 animate-fade-in-up ${
+                      selectedEventId === e.eventId
+                        ? "bg-[color:var(--soc-low)]/10 ring-1 ring-inset ring-[color:var(--soc-low)]/30"
+                        : ""
+                    }`}
                   >
                     <td className="whitespace-nowrap px-2 py-1.5 font-mono-data text-muted-foreground">
                       {formatTime(e.timestamp)}
@@ -1256,12 +1268,357 @@ function AlertActionButtons({
   );
 }
 
+// ============================================================
+// Alert grouping (FEATURE-GROUP)
+// ============================================================
+
+interface AlertGroup {
+  ruleId: string;
+  ruleName: string;
+  alerts: SecurityAlert[]; // filtered + sorted newest-first
+  count: number;
+  openCount: number;
+  ackCount: number;
+  resolvedCount: number;
+  topOpenSeverity: Severity; // highest severity among OPEN (active) alerts
+  topOverallSeverity: Severity; // highest severity across all alerts in group
+  firstObserved: string; // ISO timestamp (oldest)
+  lastObserved: string; // ISO timestamp (newest)
+  durationSec: number;
+}
+
+// Cap the number of AlertCards rendered inside an expanded group to keep the
+// DOM light during burst attacks (e.g. 100 SSH auth failures).
+const MAX_GROUP_CARDS = 50;
+
+function formatDuration(sec: number): string {
+  if (sec < 1) return "0s";
+  if (sec < 60) return `${sec}s`;
+  const m = Math.floor(sec / 60);
+  const s = sec % 60;
+  if (m < 60) return s ? `${m}m ${s}s` : `${m}m`;
+  const h = Math.floor(m / 60);
+  const rem = m % 60;
+  return rem ? `${h}h ${rem}m` : `${h}h`;
+}
+
+// AlertCard — extracted from the original inline JSX so it can be reused by
+// both the grouped (expanded) view and the individual (grouping OFF) view.
+function AlertCard({
+  alert,
+  sessionId,
+  onUpdated,
+  className,
+}: {
+  alert: SecurityAlert;
+  sessionId: string | null;
+  onUpdated: (alertId: string, status: AlertStatus) => void;
+  className?: string;
+}) {
+  const accent = alertAccentColor(alert);
+  const opacityCls =
+    alert.status === "resolved"
+      ? "opacity-50"
+      : alert.status === "acknowledged"
+        ? "opacity-80"
+        : "opacity-100";
+  return (
+    <div
+      className={cn(
+        "relative overflow-hidden rounded-md border border-border/40 bg-card/40 p-2.5 pl-3 transition-all hover:bg-accent/30",
+        opacityCls,
+        className,
+      )}
+    >
+      <div
+        className="absolute left-0 top-0 h-full w-0.5"
+        style={{ backgroundColor: accent }}
+      />
+      <div className="flex items-center gap-2">
+        <SeverityBadge severity={alert.severity} size="sm" />
+        <AlertStatusBadge status={alert.status} />
+        <span
+          className={cn(
+            "flex-1 truncate font-mono-data text-xs font-bold",
+            alert.status === "resolved" && "line-through decoration-muted-foreground/60",
+          )}
+          title={alert.ruleName}
+        >
+          {alert.ruleName}
+        </span>
+        <span className="shrink-0 font-mono-data text-[9px] text-muted-foreground">
+          {alert.alertId}
+        </span>
+      </div>
+      <div className="mt-1 text-[11px] leading-snug text-foreground/80">
+        {alert.message}
+      </div>
+      <div className="mt-1.5 flex items-center gap-3 text-[10px] text-muted-foreground">
+        <span className="font-mono-data">CONF {alert.confidence}%</span>
+        {alert.recommendedAction && (
+          <span className="truncate" title={alert.recommendedAction}>
+            → {alert.recommendedAction}
+          </span>
+        )}
+        <span className="ml-auto whitespace-nowrap font-mono-data">
+          {formatTime(alert.timestamp)}
+        </span>
+      </div>
+      <div className="mt-1.5 flex items-center justify-end gap-2 border-t border-border/30 pt-1.5">
+        <AlertActionButtons
+          alert={alert}
+          sessionId={sessionId}
+          onUpdated={onUpdated}
+        />
+      </div>
+    </div>
+  );
+}
+
+// Bulk Ack / Resolve buttons shown inside each group header.
+// Uses Promise.allSettled for parallel PATCH round-trips + partial-failure
+// reporting.
+function BulkActionButtons({
+  group,
+  sessionId,
+  onUpdated,
+}: {
+  group: AlertGroup;
+  sessionId: string | null;
+  onUpdated: (alertId: string, status: AlertStatus) => void;
+}) {
+  const [busyAck, setBusyAck] = useState(false);
+  const [busyResolve, setBusyResolve] = useState(false);
+
+  const handleBulk = async (status: "acknowledged" | "resolved") => {
+    if (!sessionId) return;
+    const isAck = status === "acknowledged";
+    if (isAck ? busyAck : busyResolve) return;
+    if (isAck) setBusyAck(true);
+    else setBusyResolve(true);
+    try {
+      // Ack All → only active alerts; Resolve All → all unresolved alerts.
+      const targets = group.alerts.filter((a) =>
+        isAck ? a.status === "active" : a.status !== "resolved",
+      );
+      if (targets.length === 0) {
+        toast.message(
+          isAck
+            ? "No active alerts to acknowledge."
+            : "No unresolved alerts to resolve.",
+          { description: group.ruleName },
+        );
+        return;
+      }
+      const results = await Promise.allSettled(
+        targets.map((a) =>
+          api.updateAlertStatus(sessionId, a.alertId, status).then(() => {
+            onUpdated(a.alertId, status);
+            return a.alertId;
+          }),
+        ),
+      );
+      const ok = results.filter((r) => r.status === "fulfilled").length;
+      const fail = results.length - ok;
+      if (fail === 0) {
+        toast.success(
+          `${isAck ? "Acknowledged" : "Resolved"} ${ok} alert${ok === 1 ? "" : "s"}.`,
+          { description: group.ruleName },
+        );
+      } else {
+        toast.warning(
+          `${isAck ? "Acknowledged" : "Resolved"} ${ok} of ${results.length} alerts.`,
+          { description: `${fail} failed · ${group.ruleName}` },
+        );
+      }
+    } catch {
+      toast.error(
+        isAck ? "Unable to acknowledge alerts." : "Unable to resolve alerts.",
+        { description: "Please check that the monitor service is running." },
+      );
+    } finally {
+      if (isAck) setBusyAck(false);
+      else setBusyResolve(false);
+    }
+  };
+
+  const btnCls =
+    "inline-flex items-center gap-1 rounded-sm border px-1.5 h-7 font-mono-data text-[11px] font-bold uppercase tracking-wider transition-colors disabled:opacity-50 disabled:cursor-not-allowed";
+
+  return (
+    <div className="flex items-center gap-1">
+      <button
+        type="button"
+        disabled={busyAck || busyResolve}
+        onClick={(e) => {
+          e.stopPropagation();
+          void handleBulk("acknowledged");
+        }}
+        className={cn(btnCls, "hover:bg-[color:var(--soc-medium)]/15")}
+        style={{
+          color: "var(--soc-medium)",
+          borderColor: "color-mix(in oklch, var(--soc-medium) 40%, transparent)",
+        }}
+        title={`Acknowledge all ${group.openCount} active alert(s) in this group`}
+      >
+        {busyAck ? (
+          <Activity className="h-3 w-3 animate-pulse" />
+        ) : (
+          <CheckCheck className="h-3 w-3" />
+        )}
+        Ack All{group.openCount > 0 ? ` (${group.openCount})` : ""}
+      </button>
+      <button
+        type="button"
+        disabled={busyAck || busyResolve}
+        onClick={(e) => {
+          e.stopPropagation();
+          void handleBulk("resolved");
+        }}
+        className={cn(btnCls, "hover:bg-[color:var(--soc-success)]/15")}
+        style={{
+          color: "var(--soc-success)",
+          borderColor: "color-mix(in oklch, var(--soc-success) 40%, transparent)",
+        }}
+        title={`Resolve all ${group.count - group.resolvedCount} unresolved alert(s) in this group`}
+      >
+        {busyResolve ? (
+          <Activity className="h-3 w-3 animate-pulse" />
+        ) : (
+          <ShieldCheck className="h-3 w-3" />
+        )}
+        Resolve All
+      </button>
+    </div>
+  );
+}
+
+// Group header card (collapsed mode shows this alone; expanded mode shows this
+// + the list of AlertCards below it).
+function GroupHeaderCard({
+  group,
+  expanded,
+  sessionId,
+  onToggle,
+  onUpdated,
+}: {
+  group: AlertGroup;
+  expanded: boolean;
+  sessionId: string | null;
+  onToggle: () => void;
+  onUpdated: (alertId: string, status: AlertStatus) => void;
+}) {
+  const topSev: Severity =
+    group.openCount > 0 ? group.topOpenSeverity : group.topOverallSeverity;
+  const accent = severityColor(topSev);
+
+  return (
+    <div
+      role="button"
+      tabIndex={0}
+      onClick={onToggle}
+      onKeyDown={(e) => {
+        if (e.key === "Enter" || e.key === " ") {
+          e.preventDefault();
+          onToggle();
+        }
+      }}
+      className="group relative cursor-pointer overflow-hidden rounded-md border border-border/50 bg-card/50 p-2.5 pl-3 transition-all hover:border-border/80 hover:bg-accent/30"
+    >
+      <div
+        className="absolute left-0 top-0 h-full w-1"
+        style={{ backgroundColor: accent }}
+      />
+
+      {/* Row 1: ruleId + top severity badge */}
+      <div className="flex items-center gap-2">
+        <span
+          className="font-mono-data text-[10px] font-bold uppercase tracking-wider"
+          style={{ color: accent }}
+        >
+          {group.ruleId}
+        </span>
+        <SeverityBadge severity={topSev} size="sm" />
+      </div>
+
+      {/* Row 2: rule name */}
+      <div
+        className="mt-1 truncate font-mono-data text-xs font-bold"
+        title={group.ruleName}
+      >
+        {group.ruleName}
+      </div>
+
+      {/* Row 3: count + status summary */}
+      <div className="mt-1 flex flex-wrap items-center gap-2 font-mono-data text-[9px] uppercase tracking-wider text-muted-foreground">
+        <span className="font-bold" style={{ color: accent }}>
+          {group.count} alerts
+        </span>
+        <span className="text-muted-foreground/40">·</span>
+        <span title="Active (open) alerts in group">
+          <span className="text-[color:var(--soc-critical)]">{group.openCount}</span> active
+        </span>
+        <span className="text-muted-foreground/40">·</span>
+        <span title="Acknowledged alerts in group">
+          <span className="text-[color:var(--soc-medium)]">{group.ackCount}</span> ack
+        </span>
+        <span className="text-muted-foreground/40">·</span>
+        <span title="Resolved alerts in group">
+          <span className="text-[color:var(--soc-success)]">{group.resolvedCount}</span> resolved
+        </span>
+      </div>
+
+      {/* Row 4: first→last observed + duration */}
+      <div className="mt-1 flex items-center gap-2 font-mono-data text-[9px] uppercase tracking-wider text-muted-foreground">
+        <span title="First → last observed (this group)">
+          {formatTime(group.firstObserved)} → {formatTime(group.lastObserved)}
+        </span>
+        <span className="text-muted-foreground/40">·</span>
+        <span title="Burst duration">{formatDuration(group.durationSec)}</span>
+      </div>
+
+      {/* Row 5: bulk actions + chevron toggle */}
+      <div className="mt-1.5 flex items-center gap-1.5 border-t border-border/30 pt-1.5">
+        <BulkActionButtons
+          group={group}
+          sessionId={sessionId}
+          onUpdated={onUpdated}
+        />
+        <button
+          type="button"
+          onClick={(e) => {
+            e.stopPropagation();
+            onToggle();
+          }}
+          className="ml-auto inline-flex h-5 w-5 items-center justify-center rounded-sm text-muted-foreground transition-colors hover:bg-accent/40 hover:text-foreground"
+          title={expanded ? "Collapse group" : "Expand group"}
+          aria-label={expanded ? "Collapse group" : "Expand group"}
+          aria-expanded={expanded}
+        >
+          {expanded ? (
+            <ChevronUp className="h-3.5 w-3.5" />
+          ) : (
+            <ChevronDown className="h-3.5 w-3.5" />
+          )}
+        </button>
+      </div>
+    </div>
+  );
+}
+
 function LiveAlerts() {
   const alerts = useAppStore((s) => s.alerts);
   const sessionId = useAppStore((s) => s.sessionId);
   const updateAlertStatus = useAppStore((s) => s.updateAlertStatus);
 
   const [statusFilter, setStatusFilter] = useState<AlertStatusFilter>("all");
+  // FEATURE-GROUP: grouping toggle (default ON). When OFF, all alerts render as
+  // individual cards (the pre-grouping behavior).
+  const [groupByRule, setGroupByRule] = useState(true);
+  // Set of ruleIds currently expanded in the grouped view.
+  const [expandedGroups, setExpandedGroups] = useState<Set<string>>(
+    () => new Set(),
+  );
 
   const filtered = useMemo(() => {
     const list =
@@ -1272,6 +1629,8 @@ function LiveAlerts() {
   }, [alerts, statusFilter]);
 
   // Open (active) counts — what the SOC operator still needs to triage.
+  // NOTE: these count badges are unaffected by grouping mode (they always
+  // reflect the full alerts list, not the filtered view).
   const openCounts = useMemo(() => {
     const c: Record<Severity, number> = {
       critical: 0,
@@ -1309,6 +1668,84 @@ function LiveAlerts() {
     return { c, total, active, ack, resolved };
   }, [alerts]);
 
+  // FEATURE-GROUP: build groups from the (status-filtered) alerts list.
+  // Empty groups are naturally hidden — if no alerts in a group survive the
+  // filter, that ruleId won't appear in the map.
+  const groups = useMemo<AlertGroup[]>(() => {
+    const map = new Map<string, SecurityAlert[]>();
+    for (const a of filtered) {
+      const arr = map.get(a.ruleId) ?? [];
+      arr.push(a);
+      map.set(a.ruleId, arr);
+    }
+    const result: AlertGroup[] = [];
+    for (const [ruleId, alertsInGroup] of map.entries()) {
+      // Sort newest-first within each group.
+      const sorted = [...alertsInGroup].sort(
+        (a, b) =>
+          new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime(),
+      );
+      let openCount = 0;
+      let ackCount = 0;
+      let resolvedCount = 0;
+      let topOpenSeverity: Severity = "info";
+      let topOverallSeverity: Severity = "info";
+      const timestamps = sorted.map((a) => new Date(a.timestamp).getTime());
+      const firstTs = timestamps.length ? Math.min(...timestamps) : Date.now();
+      const lastTs = timestamps.length ? Math.max(...timestamps) : Date.now();
+      for (const a of sorted) {
+        if (SEVERITY_ORDER[a.severity] > SEVERITY_ORDER[topOverallSeverity]) {
+          topOverallSeverity = a.severity;
+        }
+        if (a.status === "active") {
+          openCount++;
+          if (SEVERITY_ORDER[a.severity] > SEVERITY_ORDER[topOpenSeverity]) {
+            topOpenSeverity = a.severity;
+          }
+        } else if (a.status === "acknowledged") ackCount++;
+        else if (a.status === "resolved") resolvedCount++;
+      }
+      result.push({
+        ruleId,
+        ruleName: sorted[0]?.ruleName ?? ruleId,
+        alerts: sorted,
+        count: sorted.length,
+        openCount,
+        ackCount,
+        resolvedCount,
+        topOpenSeverity,
+        topOverallSeverity,
+        firstObserved: new Date(firstTs).toISOString(),
+        lastObserved: new Date(lastTs).toISOString(),
+        durationSec: Math.max(0, Math.round((lastTs - firstTs) / 1000)),
+      });
+    }
+    // Sort: highest OPEN severity first (most urgent triage queue at top),
+    // tie-break on total count desc (noisiest burst second).
+    result.sort((a, b) => {
+      const sevDiff =
+        SEVERITY_ORDER[b.topOpenSeverity] - SEVERITY_ORDER[a.topOpenSeverity];
+      if (sevDiff !== 0) return sevDiff;
+      return b.count - a.count;
+    });
+    return result;
+  }, [filtered]);
+
+  const toggleGroup = useCallback((ruleId: string) => {
+    setExpandedGroups((prev) => {
+      const next = new Set(prev);
+      if (next.has(ruleId)) next.delete(ruleId);
+      else next.add(ruleId);
+      return next;
+    });
+  }, []);
+
+  const handleUpdated = useCallback(
+    (alertId: string, status: AlertStatus) =>
+      updateAlertStatus(alertId, status),
+    [updateAlertStatus],
+  );
+
   return (
     <Panel
       title="Live Alerts"
@@ -1331,6 +1768,41 @@ function LiveAlerts() {
               {openCounts[s]}
             </span>
           ))}
+          {/* Group by Rule toggle (FEATURE-GROUP) */}
+          <button
+            type="button"
+            onClick={() => setGroupByRule((v) => !v)}
+            className={cn(
+              "inline-flex h-6 items-center gap-1 rounded-sm border px-1.5 font-mono-data text-[9px] font-bold uppercase tracking-wider transition-colors",
+              groupByRule
+                ? "text-foreground"
+                : "border-transparent text-muted-foreground hover:text-foreground",
+            )}
+            style={
+              groupByRule
+                ? {
+                    color: "var(--soc-info)",
+                    borderColor:
+                      "color-mix(in oklch, var(--soc-info) 40%, transparent)",
+                    backgroundColor:
+                      "color-mix(in oklch, var(--soc-info) 12%, transparent)",
+                  }
+                : undefined
+            }
+            title={
+              groupByRule
+                ? "Alerts grouped by rule. Click to show all individually."
+                : "Alerts shown individually. Click to group by rule."
+            }
+            aria-pressed={groupByRule}
+          >
+            {groupByRule ? (
+              <Layers className="h-3 w-3" />
+            ) : (
+              <AlignJustify className="h-3 w-3" />
+            )}
+            {groupByRule ? "Grouped" : "List"}
+          </button>
           <ExportMenu
             alerts={alerts.slice(0, 200)}
             targetLabel={useAppStore.getState().targetAddress || "live"}
@@ -1403,68 +1875,65 @@ function LiveAlerts() {
                 : "No alerts match this filter."}
             </span>
           </div>
-        ) : (
+        ) : groupByRule ? (
+          // Grouped mode: each ruleId → one expandable card.
           <div className="flex flex-col gap-2">
-            {filtered.map((a) => {
-              const accent = alertAccentColor(a);
-              const opacityCls =
-                a.status === "resolved"
-                  ? "opacity-50"
-                  : a.status === "acknowledged"
-                    ? "opacity-80"
-                    : "opacity-100";
-              return (
-                <div
-                  key={a.id}
-                  className={cn(
-                    "relative overflow-hidden rounded-md border border-border/40 bg-card/40 p-2.5 pl-3 transition-all hover:bg-accent/30",
-                    opacityCls,
-                  )}
-                >
-                  <div
-                    className="absolute left-0 top-0 h-full w-0.5"
-                    style={{ backgroundColor: accent }}
+            {groups.map((g) => {
+              // Smart collapse: single-alert groups render as a plain
+              // AlertCard (no chevron, no group header).
+              if (g.count === 1) {
+                return (
+                  <AlertCard
+                    key={g.ruleId}
+                    alert={g.alerts[0]}
+                    sessionId={sessionId}
+                    onUpdated={handleUpdated}
                   />
-                  <div className="flex items-center gap-2">
-                    <SeverityBadge severity={a.severity} size="sm" />
-                    <AlertStatusBadge status={a.status} />
-                    <span
-                      className={cn(
-                        "flex-1 truncate font-mono-data text-xs font-bold",
-                        a.status === "resolved" && "line-through decoration-muted-foreground/60",
+                );
+              }
+              const expanded = expandedGroups.has(g.ruleId);
+              return (
+                <div key={g.ruleId} className="flex flex-col gap-2">
+                  <GroupHeaderCard
+                    group={g}
+                    expanded={expanded}
+                    sessionId={sessionId}
+                    onToggle={() => toggleGroup(g.ruleId)}
+                    onUpdated={handleUpdated}
+                  />
+                  {expanded && (
+                    <div className="ml-2 flex flex-col gap-2 border-l-2 border-border/40 pl-2">
+                      {g.alerts.slice(0, MAX_GROUP_CARDS).map((a) => (
+                        <AlertCard
+                          key={a.id}
+                          alert={a}
+                          sessionId={sessionId}
+                          onUpdated={handleUpdated}
+                          className="animate-fade-in-up"
+                        />
+                      ))}
+                      {g.alerts.length > MAX_GROUP_CARDS && (
+                        <div className="rounded-sm border border-dashed border-border/50 px-2 py-1 text-center font-mono-data text-[10px] uppercase tracking-wider text-muted-foreground">
+                          +{g.alerts.length - MAX_GROUP_CARDS} more in this group
+                        </div>
                       )}
-                      title={a.ruleName}
-                    >
-                      {a.ruleName}
-                    </span>
-                    <span className="shrink-0 font-mono-data text-[9px] text-muted-foreground">
-                      {a.alertId}
-                    </span>
-                  </div>
-                  <div className="mt-1 text-[11px] leading-snug text-foreground/80">
-                    {a.message}
-                  </div>
-                  <div className="mt-1.5 flex items-center gap-3 text-[10px] text-muted-foreground">
-                    <span className="font-mono-data">CONF {a.confidence}%</span>
-                    {a.recommendedAction && (
-                      <span className="truncate" title={a.recommendedAction}>
-                        → {a.recommendedAction}
-                      </span>
-                    )}
-                    <span className="ml-auto whitespace-nowrap font-mono-data">
-                      {formatTime(a.timestamp)}
-                    </span>
-                  </div>
-                  <div className="mt-1.5 flex items-center justify-end gap-2 border-t border-border/30 pt-1.5">
-                    <AlertActionButtons
-                      alert={a}
-                      sessionId={sessionId}
-                      onUpdated={(alertId, status) => updateAlertStatus(alertId, status)}
-                    />
-                  </div>
+                    </div>
+                  )}
                 </div>
               );
             })}
+          </div>
+        ) : (
+          // Individual mode (grouping OFF): the pre-grouping behavior.
+          <div className="flex flex-col gap-2">
+            {filtered.map((a) => (
+              <AlertCard
+                key={a.id}
+                alert={a}
+                sessionId={sessionId}
+                onUpdated={handleUpdated}
+              />
+            ))}
           </div>
         )}
       </div>

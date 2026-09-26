@@ -29,6 +29,7 @@ import { SeverityBadge } from "@/components/soc/severity-badge";
 import { StatusDot } from "@/components/soc/status-dot";
 import { AuthWarning } from "@/components/soc/auth-warning";
 import { ExportMenu } from "@/components/soc/export-menu";
+import { TimelineScrubber } from "@/components/soc/timeline-scrubber";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -864,22 +865,51 @@ function EventsTab({
   targetLabel: string;
 }) {
   const [page, setPage] = useState(1);
+  const [scrubbedEvents, setScrubbedEvents] = useState<SecurityEvent[] | null>(null);
   const pageSize = 50;
-  const totalPages = Math.max(1, Math.ceil(events.length / pageSize));
+
+  // Use scrubbed events if scrubbing has been activated, otherwise all events
+  const displayEvents = scrubbedEvents ?? events;
+  const totalPages = Math.max(1, Math.ceil(displayEvents.length / pageSize));
+  const currentPage = Math.min(page, totalPages);
   const slice = useMemo(() => {
-    const start = (page - 1) * pageSize;
-    return events.slice(start, start + pageSize);
-  }, [events, page]);
+    const start = (currentPage - 1) * pageSize;
+    return displayEvents.slice(start, start + pageSize);
+  }, [displayEvents, currentPage]);
+
+  const handleScrub = useCallback((filtered: SecurityEvent[]) => {
+    setScrubbedEvents(filtered.length === events.length ? null : filtered);
+    setPage(1);
+  }, [events.length]);
+
+  const handleResetScrub = useCallback(() => {
+    setScrubbedEvents(null);
+    setPage(1);
+  }, []);
 
   return (
     <div className="flex flex-col gap-3">
+      <TimelineScrubber events={events} onScrub={handleScrub} />
       <div className="flex items-center justify-between">
-        <SectionLabel>Event Log ({events.length} shown · {eventsTotal} total)</SectionLabel>
+        <div className="flex items-center gap-2">
+          <SectionLabel>
+            Event Log ({displayEvents.length} shown · {eventsTotal} total
+            {scrubbedEvents && scrubbedEvents.length < events.length ? ` · filtered from ${events.length}` : ""})
+          </SectionLabel>
+          {scrubbedEvents && (
+            <button
+              onClick={handleResetScrub}
+              className="rounded-sm border border-border/40 px-1.5 py-0.5 font-mono-data text-[9px] uppercase tracking-wider text-muted-foreground transition-colors hover:bg-accent/30 hover:text-foreground"
+            >
+              Reset
+            </button>
+          )}
+        </div>
         <div className="flex items-center gap-2">
           <span className="font-mono-data text-[9px] text-muted-foreground">
-            Page {page} / {totalPages}
+            Page {currentPage} / {totalPages}
           </span>
-          <ExportMenu events={events} targetLabel={targetLabel} size="sm" />
+          <ExportMenu events={displayEvents} targetLabel={targetLabel} size="sm" />
         </div>
       </div>
       <div className="overflow-hidden rounded-md border border-border/40 bg-card/30">

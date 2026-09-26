@@ -75,8 +75,10 @@ interface AppState extends MonitorLiveState, MonitorActions {
   settings: AppSettings;
   selectedOffenseId: string | null;
   selectedDefenseId: string | null;
+  selectedEventId: string | null;
   setSelectedOffense: (id: string | null) => void;
   setSelectedDefense: (id: string | null) => void;
+  setSelectedEvent: (id: string | null) => void;
   historicalSession: MonitoringSessionInfo | null;
   setHistoricalSession: (s: MonitoringSessionInfo | null) => void;
 }
@@ -120,11 +122,13 @@ export const useAppStore = create<AppState>((set, get) => ({
 
   selectedOffenseId: null,
   selectedDefenseId: null,
+  selectedEventId: null,
   historicalSession: null,
 
   setView: (v) => set({ view: v }),
   setSelectedOffense: (id) => set({ selectedOffenseId: id }),
   setSelectedDefense: (id) => set({ selectedDefenseId: id }),
+  setSelectedEvent: (id) => set({ selectedEventId: id }),
   setHistoricalSession: (s) => set({ historicalSession: s }),
   setSettings: (s) => set((state) => ({ settings: { ...state.settings, ...s } })),
 
@@ -148,6 +152,7 @@ export const useAppStore = create<AppState>((set, get) => ({
       startedAt: Date.now(),
       selectedOffenseId: null,
       selectedDefenseId: null,
+      selectedEventId: null,
     }),
 
   setStatus: (s) => set({ status: s }),
@@ -255,5 +260,6 @@ export const useAppStore = create<AppState>((set, get) => ({
       startedAt: null,
       selectedOffenseId: null,
       selectedDefenseId: null,
+      selectedEventId: null,
     }),
 }));
