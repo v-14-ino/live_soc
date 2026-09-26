@@ -1,0 +1,1857 @@
+     1→"use client";
+     2→
+     3→import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
+     4→import {
+     5→  ScrollText,
+     6→  RefreshCw,
+     7→  Search,
+     8→  ChevronLeft,
+     9→  ChevronRight,
+    10→  Eye,
+    11→  CheckCircle,
+    12→  RotateCcw,
+    13→  Activity,
+    14→  ShieldAlert,
+    15→  Swords,
+    16→  Shield,
+    17→  AlertTriangle,
+    18→  FileText,
+    19→  ArrowRight,
+    20→  ArrowDown,
+    21→  CheckCircle2,
+    22→  XCircle,
+    23→  type LucideIcon,
+    24→} from "lucide-react";
+    25→import { useAppStore } from "@/lib/store";
+    26→import { api, type HistoryDetailResponse, type HistoryListResponse } from "@/lib/api-client";
+    27→import { KpiCard } from "@/components/soc/kpi-card";
+    28→import { SeverityBadge } from "@/components/soc/severity-badge";
+    29→import { StatusDot } from "@/components/soc/status-dot";
+    30→import { AuthWarning } from "@/components/soc/auth-warning";
+    31→import { ExportMenu } from "@/components/soc/export-menu";
+    32→import { TimelineScrubber } from "@/components/soc/timeline-scrubber";
+    33→import { Button } from "@/components/ui/button";
+    34→import { Input } from "@/components/ui/input";
+    35→import { Skeleton } from "@/components/ui/skeleton";
+    36→import {
+    37→  Select,
+    38→  SelectContent,
+    39→  SelectItem,
+    40→  SelectTrigger,
+    41→  SelectValue,
+    42→} from "@/components/ui/select";
+    43→import {
+    44→  Dialog,
+    45→  DialogContent,
+    46→  DialogHeader,
+    47→  DialogTitle,
+    48→  DialogDescription,
+    49→} from "@/components/ui/dialog";
+    50→import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+    51→import { toast } from "sonner";
+    52→import { cn } from "@/lib/utils";
+    53→import { severityColor, SEVERITY_ORDER } from "@/lib/constants";
+    54→import type {
+    55→  Severity,
+    56→  ScenarioStatus,
+    57→  SecurityEvent,
+    58→  SecurityAlert,
+    59→  OffenseScenario,
+    60→  DefenseScenario,
+    61→  MonitoringSessionInfo,
+    62→  AssessmentResult,
+    63→} from "@/lib/types";
+    64→
+    65→// ============================================================
+    66→// Helpers
+    67→// ============================================================
+    68→
+    69→function formatTime(ts: string | Date): string {
+    70→  try {
+    71→    const d = new Date(ts);
+    72→    if (isNaN(d.getTime())) return "--:--:--";
+    73→    return d.toLocaleTimeString("en-GB", { hour12: false });
+    74→  } catch {
+    75→    return "--:--:--";
+    76→  }
+    77→}
+    78→
+    79→function formatDateTime(ts: string | Date | null | undefined): string {
+    80→  if (ts == null) return "—";
+    81→  try {
+    82→    const d = new Date(ts);
+    83→    if (isNaN(d.getTime())) return "----/--/-- --:--:--";
+    84→    const pad = (n: number) => String(n).padStart(2, "0");
+    85→    return `${d.getFullYear()}/${pad(d.getMonth() + 1)}/${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
+    86→  } catch {
+    87→    return "----/--/-- --:--:--";
+    88→  }
+    89→}
+    90→
+    91→function durationLabel(sec: number): string {
+    92→  if (!Number.isFinite(sec) || sec < 0) return "—";
+    93→  if (sec < 60) return `${sec}s`;
+    94→  const m = Math.floor(sec / 60);
+    95→  const s = sec % 60;
+    96→  if (m < 60) return `${m}m ${s}s`;
+    97→  const h = Math.floor(m / 60);
+    98→  return `${h}h ${m % 60}m`;
+    99→}
+   100→
+   101→function durationBetween(first: string | Date, last: string | Date | null | undefined): string {
+   102→  if (!last) return "—";
+   103→  try {
+   104→    const a = new Date(first).getTime();
+   105→    const b = new Date(last).getTime();
+   106→    if (!isFinite(a) || !isFinite(b)) return "—";
+   107→    const sec = Math.max(0, Math.round((b - a) / 1000));
+   108→    return durationLabel(sec);
+   109→  } catch {
+   110→    return "—";
+   111→  }
+   112→}
+   113→
+   114→// The history API returns raw Prisma rows where the target is nested.
+   115→// Normalize to the flat MonitoringSessionInfo shape the rest of the UI uses.
+   116→function normalizeSession(raw: unknown): MonitoringSessionInfo {
+   117→  const r = raw as Record<string, unknown>;
+   118→  const target = (r.target ?? null) as { address?: string; hostname?: string | null } | null;
+   119→  return {
+   120→    id: String(r.id),
+   121→    targetId: String(r.targetId),
+   122→    targetAddress: String(r.targetAddress ?? target?.address ?? "—"),
+   123→    assessmentId: r.assessmentId ? String(r.assessmentId) : null,
+   124→    status: r.status as MonitoringSessionInfo["status"],
+   125→    mode: r.mode as MonitoringSessionInfo["mode"],
+   126→    startedAt: typeof r.startedAt === "string" ? r.startedAt : new Date(r.startedAt as Date).toISOString(),
+   127→    endedAt: r.endedAt ? (typeof r.endedAt === "string" ? r.endedAt : new Date(r.endedAt as Date).toISOString()) : null,
+   128→    durationSec: Number(r.durationSec ?? 0),
+   129→    eventCount: Number(r.eventCount ?? 0),
+   130→    alertCount: Number(r.alertCount ?? 0),
+   131→    riskSummary: r.riskSummary ? String(r.riskSummary) : null,
+   132→  };
+   133→}
+   134→
+   135→function normalizeEvent(raw: unknown): SecurityEvent {
+   136→  const r = raw as Record<string, unknown>;
+   137→  let rawField: Record<string, unknown> | null = null;
+   138→  if (typeof r.rawJson === "string" && r.rawJson) {
+   139→    try {
+   140→      rawField = JSON.parse(r.rawJson);
+   141→    } catch {
+   142→      rawField = null;
+   143→    }
+   144→  } else if (r.raw && typeof r.raw === "object") {
+   145→    rawField = r.raw as Record<string, unknown>;
+   146→  }
+   147→  return {
+   148→    id: String(r.id),
+   149→    eventId: String(r.eventId),
+   150→    sessionId: r.sessionId ? String(r.sessionId) : null,
+   151→    timestamp: typeof r.timestamp === "string" ? r.timestamp : new Date(r.timestamp as Date).toISOString(),
+   152→    source: r.source as string,
+   153→    sourceIp: (r.sourceIp as string | null) ?? null,
+   154→    sourcePort: r.sourcePort != null ? Number(r.sourcePort) : null,
+   155→    destIp: (r.destIp as string | null) ?? null,
+   156→    destPort: r.destPort != null ? Number(r.destPort) : null,
+   157→    protocol: (r.protocol as string | null) ?? null,
+   158→    eventType: String(r.eventType),
+   159→    severity: r.severity as Severity,
+   160→    status: String(r.status ?? "new"),
+   161→    message: String(r.message ?? ""),
+   162→    isDemo: Boolean(r.isDemo),
+   163→    raw: rawField,
+   164→  };
+   165→}
+   166→
+   167→function normalizeAlert(raw: unknown): SecurityAlert {
+   168→  const r = raw as Record<string, unknown>;
+   169→  return {
+   170→    id: String(r.id),
+   171→    alertId: String(r.alertId),
+   172→    sessionId: r.sessionId ? String(r.sessionId) : null,
+   173→    eventId: r.eventId ? String(r.eventId) : null,
+   174→    ruleId: String(r.ruleId),
+   175→    ruleName: String(r.ruleName),
+   176→    severity: r.severity as Severity,
+   177→    confidence: Number(r.confidence ?? 0),
+   178→    message: String(r.message ?? ""),
+   179→    recommendedAction: r.recommendedAction ? String(r.recommendedAction) : null,
+   180→    status: String(r.status ?? "active"),
+   181→    timestamp: typeof r.timestamp === "string" ? r.timestamp : new Date(r.timestamp as Date).toISOString(),
+   182→  };
+   183→}
+   184→
+   185→function normalizeAssessment(raw: unknown): AssessmentResult | null {
+   186→  if (!raw) return null;
+   187→  const r = raw as Record<string, unknown>;
+   188→  const ports = Array.isArray(r.ports) ? r.ports : [];
+   189→  const services = Array.isArray(r.services) ? r.services : [];
+   190→  // Build a serviceId → name lookup so historical port rows (which store a
+   191→  // foreign key in `serviceId`) can be resolved to a human-readable name.
+   192→  const serviceNameById = new Map<string, string>();
+   193→  for (const s of services) {
+   194→    const sr = s as Record<string, unknown>;
+   195→    if (sr.id && sr.name) serviceNameById.set(String(sr.id), String(sr.name));
+   196→  }
+   197→  return {
+   198→    id: String(r.id),
+   199→    targetId: String(r.targetId),
+   200→    status: String(r.status ?? "pending"),
+   201→    reachability: String(r.reachability ?? "unknown"),
+   202→    latencyMs: r.latencyMs != null ? Number(r.latencyMs) : null,
+   203→    hostname: (r.hostname as string | null) ?? null,
+   204→    osGuess: (r.osGuess as string | null) ?? null,
+   205→    startedAt: typeof r.startedAt === "string" ? r.startedAt : new Date(r.startedAt as Date).toISOString(),
+   206→    completedAt: r.completedAt
+   207→      ? typeof r.completedAt === "string"
+   208→        ? r.completedAt
+   209→        : new Date(r.completedAt as Date).toISOString()
+   210→      : null,
+   211→    ports: ports.map((p) => {
+   212→      const pr = p as Record<string, unknown>;
+   213→      const sid = pr.serviceId ? String(pr.serviceId) : null;
+   214→      return {
+   215→        id: String(pr.id),
+   216→        number: Number(pr.number),
+   217→        protocol: String(pr.protocol ?? "tcp"),
+   218→        state: String(pr.state ?? "open"),
+   219→        serviceName:
+   220→          (pr.serviceName as string | undefined) ??
+   221→          (sid ? serviceNameById.get(sid) : undefined),
+   222→      };
+   223→    }),
+   224→    services: services.map((s) => ({
+   225→      id: String((s as Record<string, unknown>).id),
+   226→      name: String((s as Record<string, unknown>).name),
+   227→      port: Number((s as Record<string, unknown>).port),
+   228→      protocol: String((s as Record<string, unknown>).protocol ?? "tcp"),
+   229→      product: ((s as Record<string, unknown>).product as string | null) ?? null,
+   230→      version: ((s as Record<string, unknown>).version as string | null) ?? null,
+   231→      extrainfo: ((s as Record<string, unknown>).extrainfo as string | null) ?? null,
+   232→      method: String((s as Record<string, unknown>).method ?? "table"),
+   233→      confidence: Number((s as Record<string, unknown>).confidence ?? 50),
+   234→    })),
+   235→  };
+   236→}
+   237→
+   238→function parseRelatedEventIds(ids: string | string[] | null | undefined): string[] {
+   239→  if (ids == null) return [];
+   240→  if (Array.isArray(ids)) return ids.map(String).filter(Boolean);
+   241→  const s = String(ids).trim();
+   242→  if (!s) return [];
+   243→  return s.split(",").map((x) => x.trim()).filter(Boolean);
+   244→}
+   245→
+   246→function parseAttackPath(ap: string | string[] | null | undefined): string[] {
+   247→  if (ap == null) return [];
+   248→  if (Array.isArray(ap)) return ap.map(String).filter(Boolean);
+   249→  const s = String(ap).trim();
+   250→  if (!s) return [];
+   251→  if (s.includes("->")) return s.split("->").map((x) => x.trim()).filter(Boolean);
+   252→  if (s.includes("\n")) return s.split("\n").map((x) => x.trim()).filter(Boolean);
+   253→  if (s.includes(",")) return s.split(",").map((x) => x.trim()).filter(Boolean);
+   254→  return [s];
+   255→}
+   256→
+   257→function normalizeOffenseScenario(raw: unknown): OffenseScenario {
+   258→  const r = raw as Record<string, unknown>;
+   259→  return {
+   260→    id: String(r.id),
+   261→    scenarioId: String(r.scenarioId),
+   262→    sessionId: r.sessionId ? String(r.sessionId) : null,
+   263→    title: String(r.title ?? ""),
+   264→    category: String(r.category ?? ""),
+   265→    severity: (r.severity as Severity) ?? "medium",
+   266→    confidence: Number(r.confidence ?? 0),
+   267→    affectedTarget: (r.affectedTarget as string | null) ?? null,
+   268→    affectedService: (r.affectedService as string | null) ?? null,
+   269→    technique: (r.technique as string | null) ?? null,
+   270→    techniqueMitre: (r.techniqueMitre as string | null) ?? null,
+   271→    attackPath: (r.attackPath as string | null) ?? null,
+   272→    potentialImpact: (r.potentialImpact as string | null) ?? null,
+   273→    relatedEventIds: parseRelatedEventIds(r.relatedEventIds as string | string[] | null | undefined),
+   274→    eventCount: Number(r.eventCount ?? 0),
+   275→    sourceCount: Number(r.sourceCount ?? 0),
+   276→    status: (r.status as ScenarioStatus) ?? "active",
+   277→    firstObserved: typeof r.firstObserved === "string" ? r.firstObserved : new Date(r.firstObserved as Date).toISOString(),
+   278→    lastObserved: typeof r.lastObserved === "string" ? r.lastObserved : new Date(r.lastObserved as Date).toISOString(),
+   279→  };
+   280→}
+   281→
+   282→function normalizeDefenseScenario(raw: unknown): DefenseScenario {
+   283→  const r = raw as Record<string, unknown>;
+   284→  return {
+   285→    id: String(r.id),
+   286→    scenarioId: String(r.scenarioId),
+   287→    sessionId: r.sessionId ? String(r.sessionId) : null,
+   288→    relatedOffenseId: (r.relatedOffenseId as string | null) ?? null,
+   289→    title: String(r.title ?? ""),
+   290→    category: String(r.category ?? ""),
+   291→    priority: (r.priority as Severity) ?? "medium",
+   292→    affectedService: (r.affectedService as string | null) ?? null,
+   293→    detect: (r.detect as string | null) ?? null,
+   294→    monitor: (r.monitor as string | null) ?? null,
+   295→    prevent: (r.prevent as string | null) ?? null,
+   296→    respond: (r.respond as string | null) ?? null,
+   297→    recommendedAction: (r.recommendedAction as string | null) ?? null,
+   298→    relatedEventIds: parseRelatedEventIds(r.relatedEventIds as string | string[] | null | undefined),
+   299→    status: (r.status as ScenarioStatus) ?? "active",
+   300→    firstObserved: typeof r.firstObserved === "string" ? r.firstObserved : new Date(r.firstObserved as Date).toISOString(),
+   301→    lastObserved: typeof r.lastObserved === "string" ? r.lastObserved : new Date(r.lastObserved as Date).toISOString(),
+   302→  };
+   303→}
+   304→
+   305→const PROTOCOL_COLORS: Record<string, string> = {
+   306→  TCP: "var(--soc-low)",
+   307→  UDP: "var(--soc-medium)",
+   308→  HTTP: "var(--soc-success)",
+   309→  HTTPS: "var(--soc-info)",
+   310→  ICMP: "var(--soc-critical)",
+   311→  SSH: "var(--soc-high)",
+   312→  FTP: "var(--soc-high)",
+   313→  DNS: "var(--soc-info)",
+   314→  SMTP: "var(--soc-medium)",
+   315→};
+   316→
+   317→function protoColor(p?: string | null): string {
+   318→  if (!p) return "var(--muted-foreground)";
+   319→  return PROTOCOL_COLORS[p.toUpperCase()] ?? "var(--foreground)";
+   320→}
+   321→
+   322→function portAccentColor(port: number): string {
+   323→  if (port === 22 || port === 3389) return "var(--soc-medium)";
+   324→  if ([80, 443, 8080, 8443].includes(port)) return "var(--soc-low)";
+   325→  if ([3306, 5432, 6379, 1433, 27017, 1521].includes(port)) return "var(--soc-critical)";
+   326→  if ([21, 23, 445, 139, 137].includes(port)) return "var(--soc-critical)";
+   327→  if (port === 53) return "var(--soc-info)";
+   328→  return "var(--foreground)";
+   329→}
+   330→
+   331→function severityRank(s: Severity): number {
+   332→  return SEVERITY_ORDER[s] ?? 0;
+   333→}
+   334→
+   335→function sortOffense(list: OffenseScenario[]): OffenseScenario[] {
+   336→  return list.slice().sort((a, b) => {
+   337→    const sev = severityRank(b.severity) - severityRank(a.severity);
+   338→    if (sev !== 0) return sev;
+   339→    const ta = new Date(a.lastObserved).getTime() || 0;
+   340→    const tb = new Date(b.lastObserved).getTime() || 0;
+   341→    return tb - ta;
+   342→  });
+   343→}
+   344→
+   345→function sortDefense(list: DefenseScenario[]): DefenseScenario[] {
+   346→  return list.slice().sort((a, b) => {
+   347→    const sev = severityRank(b.priority) - severityRank(a.priority);
+   348→    if (sev !== 0) return sev;
+   349→    const ta = new Date(a.lastObserved).getTime() || 0;
+   350→    const tb = new Date(b.lastObserved).getTime() || 0;
+   351→    return tb - ta;
+   352→  });
+   353→}
+   354→
+   355→// ============================================================
+   356→// Small UI atoms
+   357→// ============================================================
+   358→
+   359→function SectionLabel({ children }: { children: ReactNode }) {
+   360→  return (
+   361→    <div className="font-mono-data text-[9px] font-semibold uppercase tracking-wider text-muted-foreground/80">
+   362→      {children}
+   363→    </div>
+   364→  );
+   365→}
+   366→
+   367→function MetaField({
+   368→  label,
+   369→  value,
+   370→  icon: Icon,
+   371→}: {
+   372→  label: string;
+   373→  value: ReactNode;
+   374→  icon?: LucideIcon;
+   375→}) {
+   376→  return (
+   377→    <div className="min-w-0">
+   378→      <div className="font-mono-data text-[9px] uppercase tracking-wider text-muted-foreground/70">
+   379→        {label}
+   380→      </div>
+   381→      <div className="mt-0.5 flex items-center gap-1 text-[11px] text-foreground/90">
+   382→        {Icon && <Icon className="h-3 w-3 shrink-0 text-muted-foreground" />}
+   383→        <span
+   384→          className="truncate font-mono-data"
+   385→          title={typeof value === "string" ? value : undefined}
+   386→        >
+   387→          {value ?? "—"}
+   388→        </span>
+   389→      </div>
+   390→    </div>
+   391→  );
+   392→}
+   393→
+   394→function InfoRow({ label, value }: { label: string; value: ReactNode }) {
+   395→  return (
+   396→    <div className="flex items-start gap-2">
+   397→      <span className="w-[100px] shrink-0 font-mono-data text-[10px] uppercase tracking-wider text-muted-foreground/70">
+   398→        {label}
+   399→      </span>
+   400→      <span className="min-w-0 flex-1 font-mono-data text-[11px] text-foreground/90">
+   401→        {value ?? "—"}
+   402→      </span>
+   403→    </div>
+   404→  );
+   405→}
+   406→
+   407→// ============================================================
+   408→// Header
+   409→// ============================================================
+   410→
+   411→function HistoryHeader({
+   412→  onRefresh,
+   413→  refreshing,
+   414→  statusFilter,
+   415→  setStatusFilter,
+   416→  targetSearch,
+   417→  setTargetSearch,
+   418→  pageSize,
+   419→  setPageSize,
+   420→}: {
+   421→  onRefresh: () => void;
+   422→  refreshing: boolean;
+   423→  statusFilter: string;
+   424→  setStatusFilter: (v: string) => void;
+   425→  targetSearch: string;
+   426→  setTargetSearch: (v: string) => void;
+   427→  pageSize: number;
+   428→  setPageSize: (v: number) => void;
+   429→}) {
+   430→  return (
+   431→    <div className="shrink-0 border-b border-border/40 bg-card/30 px-4 py-3">
+   432→      <div className="flex flex-wrap items-center justify-between gap-2">
+   433→        <div className="flex min-w-0 items-center gap-2.5">
+   434→          <div className="flex h-7 w-7 items-center justify-center rounded-md border border-border/60 bg-muted/40">
+   435→            <ScrollText className="h-4 w-4 text-muted-foreground" />
+   436→          </div>
+   437→          <div className="min-w-0">
+   438→            <h2 className="font-mono-data text-sm font-bold uppercase tracking-wider text-foreground">
+   439→              History
+   440→            </h2>
+   441→            <p className="truncate text-[10px] text-muted-foreground">
+   442→              Previous monitoring sessions. History persists across restarts.
+   443→            </p>
+   444→          </div>
+   445→        </div>
+   446→        <div className="flex items-center gap-2">
+   447→          <AuthWarning variant="inline" className="hidden md:flex" />
+   448→          <Button
+   449→            size="sm"
+   450→            variant="outline"
+   451→            onClick={onRefresh}
+   452→            disabled={refreshing}
+   453→            className="h-7 gap-1.5 text-[11px]"
+   454→          >
+   455→            <RefreshCw className={cn("h-3 w-3", refreshing && "animate-spin")} />
+   456→            Refresh
+   457→          </Button>
+   458→        </div>
+   459→      </div>
+   460→      <div className="mt-2.5 flex flex-wrap items-center gap-2">
+   461→        <div className="flex items-center gap-1.5">
+   462→          <span className="font-mono-data text-[9px] uppercase tracking-wider text-muted-foreground/70">
+   463→            Status
+   464→          </span>
+   465→          <Select value={statusFilter} onValueChange={setStatusFilter}>
+   466→            <SelectTrigger className="h-7 w-[140px] text-[11px]">
+   467→              <SelectValue />
+   468→            </SelectTrigger>
+   469→            <SelectContent>
+   470→              <SelectItem value="all">All statuses</SelectItem>
+   471→              <SelectItem value="completed">Completed</SelectItem>
+   472→              <SelectItem value="stopped">Stopped</SelectItem>
+   473→              <SelectItem value="error">Error</SelectItem>
+   474→            </SelectContent>
+   475→          </Select>
+   476→        </div>
+   477→        <div className="relative flex items-center">
+   478→          <Search className="absolute left-2 h-3 w-3 text-muted-foreground" />
+   479→          <Input
+   480→            placeholder="Filter by target…"
+   481→            value={targetSearch}
+   482→            onChange={(e) => setTargetSearch(e.target.value)}
+   483→            className="h-7 w-[200px] pl-7 text-[11px]"
+   484→          />
+   485→        </div>
+   486→        <div className="flex items-center gap-1.5">
+   487→          <span className="font-mono-data text-[9px] uppercase tracking-wider text-muted-foreground/70">
+   488→            Page
+   489→          </span>
+   490→          <Select value={String(pageSize)} onValueChange={(v) => setPageSize(Number(v))}>
+   491→            <SelectTrigger className="h-7 w-[80px] text-[11px]">
+   492→              <SelectValue />
+   493→            </SelectTrigger>
+   494→            <SelectContent>
+   495→              <SelectItem value="10">10</SelectItem>
+   496→              <SelectItem value="20">20</SelectItem>
+   497→              <SelectItem value="50">50</SelectItem>
+   498→              <SelectItem value="100">100</SelectItem>
+   499→            </SelectContent>
+   500→          </Select>
+   501→        </div>
+   502→      </div>
+   503→    </div>
+   504→  );
+   505→}
+   506→
+   507→// ============================================================
+   508→// Summary row
+   509→// ============================================================
+   510→
+   511→function SummaryRow({
+   512→  total,
+   513→  totalEvents,
+   514→  totalAlerts,
+   515→}: {
+   516→  total: number;
+   517→  totalEvents: number;
+   518→  totalAlerts: number;
+   519→}) {
+   520→  return (
+   521→    <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
+   522→      <KpiCard
+   523→        label="Total Sessions"
+   524→        value={total}
+   525→        icon={ScrollText}
+   526→        accent="default"
+   527→        sublabel="In current page"
+   528→      />
+   529→      <KpiCard
+   530→        label="Total Events"
+   531→        value={totalEvents}
+   532→        icon={Activity}
+   533→        accent="low"
+   534→        sublabel="Sum of current page"
+   535→      />
+   536→      <KpiCard
+   537→        label="Total Alerts"
+   538→        value={totalAlerts}
+   539→        icon={AlertTriangle}
+   540→        accent="high"
+   541→        sublabel="Sum of current page"
+   542→      />
+   543→    </div>
+   544→  );
+   545→}
+   546→
+   547→// ============================================================
+   548→// Sessions table
+   549→// ============================================================
+   550→
+   551→function SessionsTable({
+   552→  sessions,
+   553→  loading,
+   554→  onOpen,
+   555→}: {
+   556→  sessions: MonitoringSessionInfo[];
+   557→  loading: boolean;
+   558→  onOpen: (s: MonitoringSessionInfo) => void;
+   559→}) {
+   560→  if (loading) {
+   561→    return (
+   562→      <div className="overflow-hidden rounded-lg border border-border/40 bg-card/30">
+   563→        <div className="space-y-0">
+   564→          {[0, 1, 2, 3, 4].map((i) => (
+   565→            <Skeleton key={i} className="h-11 w-full rounded-none" />
+   566→          ))}
+   567→        </div>
+   568→      </div>
+   569→    );
+   570→  }
+   571→  if (sessions.length === 0) return null;
+   572→  return (
+   573→    <div className="overflow-hidden rounded-lg border border-border/40 bg-card/30">
+   574→      <div className="soc-scrollbar max-h-[calc(100vh-380px)] min-h-[200px] overflow-auto">
+   575→        <table className="w-full table-fixed border-collapse text-[11px]">
+   576→          <colgroup>
+   577→            <col className="w-[170px]" />
+   578→            <col className="w-[120px]" />
+   579→            <col className="w-[140px]" />
+   580→            <col className="w-[140px]" />
+   581→            <col className="w-[70px]" />
+   582→            <col className="w-[90px]" />
+   583→            <col className="w-[60px]" />
+   584→            <col className="w-[60px]" />
+   585→            <col className="w-auto" />
+   586→            <col className="w-[80px]" />
+   587→          </colgroup>
+   588→          <thead className="sticky top-0 z-10 bg-card/95 backdrop-blur-sm">
+   589→            <tr className="border-b border-border/50">
+   590→              {["Assessment ID", "Target", "Start", "End", "Dur", "Status", "Evts", "Alrts", "Risk Summary", "Actions"].map(
+   591→                (h) => (
+   592→                  <th
+   593→                    key={h}
+   594→                    className="px-2 py-2 text-left font-mono-data text-[9px] font-semibold uppercase tracking-wider text-muted-foreground/80"
+   595→                  >
+   596→                    {h}
+   597→                  </th>
+   598→                ),
+   599→              )}
+   600→            </tr>
+   601→          </thead>
+   602→          <tbody>
+   603→            {sessions.map((s) => (
+   604→              <tr
+   605→                key={s.id}
+   606→                onClick={() => onOpen(s)}
+   607→                className="group cursor-pointer border-b border-border/20 transition-colors hover:bg-[color:var(--soc-low)]/5 last:border-b-0"
+   608→              >
+   609→                <td className="truncate px-2 py-2 font-mono-data text-[10px] text-[color:var(--soc-low)] group-hover:underline">
+   610→                  <span title={s.id}>{s.id.slice(0, 16)}…</span>
+   611→                </td>
+   612→                <td className="truncate px-2 py-2 font-mono-data text-[10px] text-foreground/90" title={s.targetAddress}>
+   613→                  {s.targetAddress}
+   614→                </td>
+   615→                <td className="px-2 py-2 font-mono-data text-[10px] text-muted-foreground" title={formatDateTime(s.startedAt)}>
+   616→                  {formatDateTime(s.startedAt)}
+   617→                </td>
+   618→                <td className="px-2 py-2 font-mono-data text-[10px] text-muted-foreground" title={formatDateTime(s.endedAt)}>
+   619→                  {s.endedAt ? formatDateTime(s.endedAt) : "—"}
+   620→                </td>
+   621→                <td className="px-2 py-2 font-mono-data text-[10px] text-muted-foreground">
+   622→                  {durationLabel(s.durationSec)}
+   623→                </td>
+   624→                <td className="px-2 py-2">
+   625→                  <StatusDot status={s.status} label={s.status.toUpperCase()} className="text-[9px]" />
+   626→                </td>
+   627→                <td className="px-2 py-2 font-mono-data text-[10px] text-foreground/90">
+   628→                  {s.eventCount}
+   629→                </td>
+   630→                <td className="px-2 py-2 font-mono-data text-[10px] text-foreground/90">
+   631→                  {s.alertCount}
+   632→                </td>
+   633→                <td className="truncate px-2 py-2 text-[10px] text-muted-foreground" title={s.riskSummary ?? ""}>
+   634→                  {s.riskSummary ?? "—"}
+   635→                </td>
+   636→                <td className="px-2 py-2">
+   637→                  <Button
+   638→                    size="sm"
+   639→                    variant="ghost"
+   640→                    onClick={(e) => {
+   641→                      e.stopPropagation();
+   642→                      onOpen(s);
+   643→                    }}
+   644→                    className="h-6 gap-1 px-2 text-[10px] text-muted-foreground hover:text-[color:var(--soc-low)]"
+   645→                  >
+   646→                    <Eye className="h-3 w-3" />
+   647→                    View
+   648→                  </Button>
+   649→                </td>
+   650→              </tr>
+   651→            ))}
+   652→          </tbody>
+   653→        </table>
+   654→      </div>
+   655→    </div>
+   656→  );
+   657→}
+   658→
+   659→function Pagination({
+   660→  page,
+   661→  pageSize,
+   662→  total,
+   663→  onPage,
+   664→}: {
+   665→  page: number;
+   666→  pageSize: number;
+   667→  total: number;
+   668→  onPage: (p: number) => void;
+   669→}) {
+   670→  const totalPages = Math.max(1, Math.ceil(total / pageSize));
+   671→  const from = total === 0 ? 0 : (page - 1) * pageSize + 1;
+   672→  const to = Math.min(total, page * pageSize);
+   673→  return (
+   674→    <div className="flex items-center justify-between gap-2">
+   675→      <span className="font-mono-data text-[10px] text-muted-foreground">
+   676→        Showing <span className="text-foreground/90">{from}–{to}</span> of{" "}
+   677→        <span className="text-foreground/90">{total}</span> · Page{" "}
+   678→        <span className="text-foreground/90">{page}</span> /{" "}
+   679→        <span className="text-foreground/90">{totalPages}</span>
+   680→      </span>
+   681→      <div className="flex items-center gap-1">
+   682→        <Button
+   683→          size="sm"
+   684→          variant="outline"
+   685→          disabled={page <= 1}
+   686→          onClick={() => onPage(page - 1)}
+   687→          className="h-7 gap-1 px-2 text-[11px]"
+   688→        >
+   689→          <ChevronLeft className="h-3 w-3" />
+   690→          Prev
+   691→        </Button>
+   692→        <Button
+   693→          size="sm"
+   694→          variant="outline"
+   695→          disabled={page >= totalPages}
+   696→          onClick={() => onPage(page + 1)}
+   697→          className="h-7 gap-1 px-2 text-[11px]"
+   698→        >
+   699→          Next
+   700→          <ChevronRight className="h-3 w-3" />
+   701→        </Button>
+   702→      </div>
+   703→    </div>
+   704→  );
+   705→}
+   706→
+   707→// ============================================================
+   708→// Empty state
+   709→// ============================================================
+   710→
+   711→function NoHistoryEmptyState() {
+   712→  const setView = useAppStore((s) => s.setView);
+   713→  return (
+   714→    <div className="flex h-full flex-col items-center justify-center gap-4 px-6 py-12 text-center">
+   715→      <div className="flex h-16 w-16 items-center justify-center rounded-full border border-border/40 bg-muted/30">
+   716→        <ScrollText className="h-8 w-8 text-muted-foreground/60" />
+   717→      </div>
+   718→      <div>
+   719→        <h3 className="font-mono-data text-base font-bold uppercase tracking-wider text-foreground">
+   720→          No Monitoring Sessions Yet
+   721→        </h3>
+   722→        <p className="mx-auto mt-1.5 max-w-md text-sm text-muted-foreground">
+   723→          Start monitoring in Live Monitor to create history. Completed sessions
+   724→          are persisted in the database and survive restarts.
+   725→        </p>
+   726→      </div>
+   727→      <Button size="sm" className="gap-1.5" onClick={() => setView("monitor")}>
+   728→        <Activity className="h-4 w-4" />
+   729→        Go to Live Monitor
+   730→      </Button>
+   731→    </div>
+   732→  );
+   733→}
+   734→
+   735→// ============================================================
+   736→// Detail dialog — tabs
+   737→// ============================================================
+   738→
+   739→function OverviewTab({
+   740→  session,
+   741→  assessment,
+   742→}: {
+   743→  session: MonitoringSessionInfo;
+   744→  assessment: AssessmentResult | null;
+   745→}) {
+   746→  const ports = assessment?.ports ?? [];
+   747→  const services = assessment?.services ?? [];
+   748→  return (
+   749→    <div className="flex flex-col gap-4">
+   750→      <section>
+   751→        <SectionLabel>Session Information</SectionLabel>
+   752→        <div className="mt-1.5 grid grid-cols-1 gap-x-4 gap-y-1.5 rounded-md border border-border/40 bg-card/30 p-3 sm:grid-cols-2">
+   753→          <InfoRow label="Target" value={session.targetAddress} />
+   754→          <InfoRow label="Mode" value={session.mode.toUpperCase()} />
+   755→          <InfoRow label="Status" value={session.status.toUpperCase()} />
+   756→          <InfoRow label="Start" value={formatDateTime(session.startedAt)} />
+   757→          <InfoRow label="End" value={formatDateTime(session.endedAt)} />
+   758→          <InfoRow label="Duration" value={durationLabel(session.durationSec)} />
+   759→          <InfoRow label="Events" value={session.eventCount} />
+   760→          <InfoRow label="Alerts" value={session.alertCount} />
+   761→          <div className="col-span-1 sm:col-span-2">
+   762→            <div className="mb-0.5 font-mono-data text-[10px] uppercase tracking-wider text-muted-foreground/70">
+   763→              Risk Summary
+   764→            </div>
+   765→            <div className="font-mono-data text-[11px] text-foreground/90">
+   766→              {session.riskSummary ?? "—"}
+   767→            </div>
+   768→          </div>
+   769→        </div>
+   770→      </section>
+   771→
+   772→      {assessment && (
+   773→        <section>
+   774→          <SectionLabel>Assessment</SectionLabel>
+   775→          <div className="mt-1.5 grid grid-cols-1 gap-x-4 gap-y-1.5 rounded-md border border-border/40 bg-card/30 p-3 sm:grid-cols-2">
+   776→            <InfoRow label="Reachability" value={assessment.reachability} />
+   777→            <InfoRow label="Hostname" value={assessment.hostname} />
+   778→            <InfoRow label="OS Guess" value={assessment.osGuess} />
+   779→            <InfoRow label="Latency" value={assessment.latencyMs != null ? `${assessment.latencyMs} ms` : "—"} />
+   780→          </div>
+   781→        </section>
+   782→      )}
+   783→
+   784→      <section className="grid grid-cols-1 gap-3 lg:grid-cols-2">
+   785→        <div className="overflow-hidden rounded-md border border-border/40 bg-card/30">
+   786→          <div className="border-b border-border/40 px-3 py-1.5">
+   787→            <SectionLabel>Open Ports ({ports.length})</SectionLabel>
+   788→          </div>
+   789→          <div className="soc-scrollbar max-h-60 overflow-y-auto">
+   790→            {ports.length === 0 ? (
+   791→              <div className="px-3 py-4 text-center text-[11px] text-muted-foreground">
+   792→                No open ports recorded.
+   793→              </div>
+   794→            ) : (
+   795→              <table className="w-full text-[11px]">
+   796→                <thead className="sticky top-0 bg-card/95">
+   797→                  <tr className="border-b border-border/40 text-left font-mono-data text-[9px] uppercase tracking-wider text-muted-foreground/70">
+   798→                    <th className="px-2 py-1.5">Port</th>
+   799→                    <th className="px-2 py-1.5">Proto</th>
+   800→                    <th className="px-2 py-1.5">State</th>
+   801→                    <th className="px-2 py-1.5">Service</th>
+   802→                  </tr>
+   803→                </thead>
+   804→                <tbody>
+   805→                  {ports.map((p) => (
+   806→                    <tr key={p.id} className="border-b border-border/20 last:border-b-0">
+   807→                      <td className="px-2 py-1 font-mono-data" style={{ color: portAccentColor(p.number) }}>
+   808→                        {p.number}
+   809→                      </td>
+   810→                      <td className="px-2 py-1 font-mono-data text-muted-foreground">{p.protocol}</td>
+   811→                      <td className="px-2 py-1 text-muted-foreground">{p.state}</td>
+   812→                      <td className="px-2 py-1 font-mono-data">{p.serviceName ?? "—"}</td>
+   813→                    </tr>
+   814→                  ))}
+   815→                </tbody>
+   816→              </table>
+   817→            )}
+   818→          </div>
+   819→        </div>
+   820→        <div className="overflow-hidden rounded-md border border-border/40 bg-card/30">
+   821→          <div className="border-b border-border/40 px-3 py-1.5">
+   822→            <SectionLabel>Services ({services.length})</SectionLabel>
+   823→          </div>
+   824→          <div className="soc-scrollbar max-h-60 overflow-y-auto">
+   825→            {services.length === 0 ? (
+   826→              <div className="px-3 py-4 text-center text-[11px] text-muted-foreground">
+   827→                No service details recorded.
+   828→              </div>
+   829→            ) : (
+   830→              <table className="w-full text-[11px]">
+   831→                <thead className="sticky top-0 bg-card/95">
+   832→                  <tr className="border-b border-border/40 text-left font-mono-data text-[9px] uppercase tracking-wider text-muted-foreground/70">
+   833→                    <th className="px-2 py-1.5">Name</th>
+   834→                    <th className="px-2 py-1.5">Port</th>
+   835→                    <th className="px-2 py-1.5">Product</th>
+   836→                    <th className="px-2 py-1.5">Version</th>
+   837→                  </tr>
+   838→                </thead>
+   839→                <tbody>
+   840→                  {services.map((s) => (
+   841→                    <tr key={s.id} className="border-b border-border/20 last:border-b-0">
+   842→                      <td className="px-2 py-1 font-mono-data text-foreground/90">{s.name}</td>
+   843→                      <td className="px-2 py-1 font-mono-data text-muted-foreground">{s.port}</td>
+   844→                      <td className="px-2 py-1 text-muted-foreground">{s.product ?? "—"}</td>
+   845→                      <td className="px-2 py-1 text-muted-foreground">{s.version ?? "—"}</td>
+   846→                    </tr>
+   847→                  ))}
+   848→                </tbody>
+   849→              </table>
+   850→            )}
+   851→          </div>
+   852→        </div>
+   853→      </section>
+   854→    </div>
+   855→  );
+   856→}
+   857→
+   858→function EventsTab({
+   859→  events,
+   860→  eventsTotal,
+   861→  targetLabel,
+   862→}: {
+   863→  events: SecurityEvent[];
+   864→  eventsTotal: number;
+   865→  targetLabel: string;
+   866→}) {
+   867→  const [page, setPage] = useState(1);
+   868→  const [scrubbedEvents, setScrubbedEvents] = useState<SecurityEvent[] | null>(null);
+   869→  const pageSize = 50;
+   870→
+   871→  // Use scrubbed events if scrubbing has been activated, otherwise all events
+   872→  const displayEvents = scrubbedEvents ?? events;
+   873→  const totalPages = Math.max(1, Math.ceil(displayEvents.length / pageSize));
+   874→  const currentPage = Math.min(page, totalPages);
+   875→  const slice = useMemo(() => {
+   876→    const start = (currentPage - 1) * pageSize;
+   877→    return displayEvents.slice(start, start + pageSize);
+   878→  }, [displayEvents, currentPage]);
+   879→
+   880→  const handleScrub = useCallback((filtered: SecurityEvent[]) => {
+   881→    setScrubbedEvents(filtered.length === events.length ? null : filtered);
+   882→    setPage(1);
+   883→  }, [events.length]);
+   884→
+   885→  const handleResetScrub = useCallback(() => {
+   886→    setScrubbedEvents(null);
+   887→    setPage(1);
+   888→  }, []);
+   889→
+   890→  return (
+   891→    <div className="flex flex-col gap-3">
+   892→      <TimelineScrubber events={events} onScrub={handleScrub} />
+   893→      <div className="flex items-center justify-between">
+   894→        <div className="flex items-center gap-2">
+   895→          <SectionLabel>
+   896→            Event Log ({displayEvents.length} shown · {eventsTotal} total
+   897→            {scrubbedEvents && scrubbedEvents.length < events.length ? ` · filtered from ${events.length}` : ""})
+   898→          </SectionLabel>
+   899→          {scrubbedEvents && (
+   900→            <button
+   901→              onClick={handleResetScrub}
+   902→              className="rounded-sm border border-border/40 px-1.5 py-0.5 font-mono-data text-[9px] uppercase tracking-wider text-muted-foreground transition-colors hover:bg-accent/30 hover:text-foreground"
+   903→            >
+   904→              Reset
+   905→            </button>
+   906→          )}
+   907→        </div>
+   908→        <div className="flex items-center gap-2">
+   909→          <span className="font-mono-data text-[9px] text-muted-foreground">
+   910→            Page {currentPage} / {totalPages}
+   911→          </span>
+   912→          <ExportMenu events={displayEvents} targetLabel={targetLabel} size="sm" />
+   913→        </div>
+   914→      </div>
+   915→      <div className="overflow-hidden rounded-md border border-border/40 bg-card/30">
+   916→        <div className="soc-scrollbar max-h-[460px] overflow-y-auto">
+   917→          <table className="w-full table-fixed border-collapse text-[10px]">
+   918→            <colgroup>
+   919→              <col className="w-[80px]" />
+   920→              <col className="w-[150px]" />
+   921→              <col className="w-[150px]" />
+   922→              <col className="w-[60px]" />
+   923→              <col className="w-[120px]" />
+   924→              <col className="w-[70px]" />
+   925→              <col className="w-[70px]" />
+   926→            </colgroup>
+   927→            <thead className="sticky top-0 z-10 bg-card/95 backdrop-blur-sm">
+   928→              <tr className="border-b border-border/50">
+   929→                {["Time", "Source", "Destination", "Proto", "Event", "Severity", "Status"].map((h) => (
+   930→                  <th key={h} className="px-2 py-1.5 text-left font-mono-data text-[9px] font-semibold uppercase tracking-wider text-muted-foreground/80">
+   931→                    {h}
+   932→                  </th>
+   933→                ))}
+   934→              </tr>
+   935→            </thead>
+   936→            <tbody>
+   937→              {slice.length === 0 ? (
+   938→                <tr>
+   939→                  <td colSpan={7} className="px-3 py-6 text-center text-[11px] text-muted-foreground">
+   940→                    No events recorded for this session.
+   941→                  </td>
+   942→                </tr>
+   943→              ) : (
+   944→                slice.map((e) => (
+   945→                  <tr key={e.id} className="border-b border-border/20 last:border-b-0 hover:bg-muted/20">
+   946→                    <td className="px-2 py-1 font-mono-data text-[9px] text-muted-foreground" title={formatDateTime(e.timestamp)}>
+   947→                      {formatTime(e.timestamp)}
+   948→                    </td>
+   949→                    <td className="truncate px-2 py-1 font-mono-data text-[10px] text-foreground/90" title={e.sourceIp ?? "?"}>
+   950→                      {e.sourceIp ?? "?"}
+   951→                      {e.sourcePort ? `:${e.sourcePort}` : ""}
+   952→                    </td>
+   953→                    <td className="truncate px-2 py-1 font-mono-data text-[10px] text-foreground/90" title={`${e.destIp ?? "?"}:${e.destPort ?? ""}`}>
+   954→                      {e.destIp ?? "?"}
+   955→                      {e.destPort ? `:${e.destPort}` : ""}
+   956→                    </td>
+   957→                    <td className="px-2 py-1">
+   958→                      <span
+   959→                        className="rounded-sm border px-1 py-0.5 font-mono-data text-[9px] uppercase"
+   960→                        style={{
+   961→                          color: protoColor(e.protocol),
+   962→                          borderColor: `color-mix(in oklch, ${protoColor(e.protocol)} 40%, transparent)`,
+   963→                          backgroundColor: `color-mix(in oklch, ${protoColor(e.protocol)} 12%, transparent)`,
+   964→                        }}
+   965→                      >
+   966→                        {e.protocol ?? "?"}
+   967→                      </span>
+   968→                    </td>
+   969→                    <td className="px-2 py-1 text-foreground/80">
+   970→                      <div className="flex items-center gap-1">
+   971→                        <span className="font-mono-data text-[9px] text-muted-foreground">[{e.eventType}]</span>
+   972→                        {e.isDemo && (
+   973→                          <span className="rounded-sm border border-[color:var(--soc-medium)]/40 bg-[color:var(--soc-medium)]/10 px-1 font-mono-data text-[8px] font-bold uppercase text-[color:var(--soc-medium)]">
+   974→                            Demo
+   975→                          </span>
+   976→                        )}
+   977→                      </div>
+   978→                      <div className="mt-0.5 truncate text-[10px]" title={e.message}>
+   979→                        {e.message}
+   980→                      </div>
+   981→                    </td>
+   982→                    <td className="px-2 py-1">
+   983→                      <SeverityBadge severity={e.severity} size="sm" />
+   984→                    </td>
+   985→                    <td className="px-2 py-1 text-muted-foreground">
+   986→                      {e.status}
+   987→                    </td>
+   988→                  </tr>
+   989→                ))
+   990→              )}
+   991→            </tbody>
+   992→          </table>
+   993→        </div>
+   994→      </div>
+   995→      <div className="flex items-center justify-end gap-1">
+   996→        <Button size="sm" variant="outline" disabled={page <= 1} onClick={() => setPage(page - 1)} className="h-7 gap-1 px-2 text-[11px]">
+   997→          <ChevronLeft className="h-3 w-3" /> Prev
+   998→        </Button>
+   999→        <Button size="sm" variant="outline" disabled={page >= totalPages} onClick={() => setPage(page + 1)} className="h-7 gap-1 px-2 text-[11px]">
+  1000→          Next <ChevronRight className="h-3 w-3" />
+  1001→        </Button>
+  1002→      </div>
+  1003→    </div>
+  1004→  );
+  1005→}
+  1006→
+  1007→function AlertStatusBadge({ status }: { status: string }) {
+  1008→  if (status === "acknowledged") {
+  1009→    return (
+  1010→      <span
+  1011→        className="inline-flex items-center gap-1 rounded-sm border px-1.5 py-0.5 font-mono-data text-[9px] font-bold uppercase tracking-wider"
+  1012→        style={{
+  1013→          color: "var(--soc-medium)",
+  1014→          borderColor: "color-mix(in oklch, var(--soc-medium) 40%, transparent)",
+  1015→          backgroundColor: "color-mix(in oklch, var(--soc-medium) 12%, transparent)",
+  1016→        }}
+  1017→      >
+  1018→        <Eye className="h-2.5 w-2.5" />
+  1019→        ACK
+  1020→      </span>
+  1021→    );
+  1022→  }
+  1023→  if (status === "resolved") {
+  1024→    return (
+  1025→      <span
+  1026→        className="inline-flex items-center gap-1 rounded-sm border px-1.5 py-0.5 font-mono-data text-[9px] font-bold uppercase tracking-wider"
+  1027→        style={{
+  1028→          color: "var(--soc-success)",
+  1029→          borderColor: "color-mix(in oklch, var(--soc-success) 40%, transparent)",
+  1030→          backgroundColor: "color-mix(in oklch, var(--soc-success) 12%, transparent)",
+  1031→        }}
+  1032→      >
+  1033→        <CheckCircle className="h-2.5 w-2.5" />
+  1034→        Resolved
+  1035→      </span>
+  1036→    );
+  1037→  }
+  1038→  return null;
+  1039→}
+  1040→
+  1041→type AlertStatus = "active" | "acknowledged" | "resolved";
+  1042→
+  1043→function AlertActionButtons({
+  1044→  alert,
+  1045→  sessionId,
+  1046→  onUpdated,
+  1047→}: {
+  1048→  alert: SecurityAlert;
+  1049→  sessionId: string;
+  1050→  onUpdated: (alertId: string, status: AlertStatus) => void;
+  1051→}) {
+  1052→  const [busy, setBusy] = useState(false);
+  1053→
+  1054→  const handleUpdate = async (newStatus: AlertStatus) => {
+  1055→    if (busy) return;
+  1056→    setBusy(true);
+  1057→    try {
+  1058→      await api.updateAlertStatus(sessionId, alert.alertId, newStatus);
+  1059→      onUpdated(alert.alertId, newStatus);
+  1060→      const verb =
+  1061→        newStatus === "acknowledged"
+  1062→          ? "acknowledged"
+  1063→          : newStatus === "resolved"
+  1064→            ? "resolved"
+  1065→            : "reopened";
+  1066→      toast.success(`Alert ${verb}.`, {
+  1067→        description: alert.ruleName,
+  1068→      });
+  1069→    } catch (err) {
+  1070→      const e = err as Error & { status?: number };
+  1071→      if (!e.status) {
+  1072→        toast.error("Unable to connect to monitoring service.", {
+  1073→          description: "Please check that the monitor service is running.",
+  1074→        });
+  1075→      } else if (e.status === 404) {
+  1076→        toast.error("Alert not found.", {
+  1077→          description: "It may have been removed from the database.",
+  1078→        });
+  1079→      } else {
+  1080→        toast.error(e.message || "Unable to update alert status.");
+  1081→      }
+  1082→    } finally {
+  1083→      setBusy(false);
+  1084→    }
+  1085→  };
+  1086→
+  1087→  const btnCls =
+  1088→    "inline-flex items-center gap-1 rounded-sm border px-1.5 py-0.5 font-mono-data text-[9px] font-bold uppercase tracking-wider transition-colors disabled:opacity-50 disabled:cursor-not-allowed";
+  1089→
+  1090→  if (alert.status === "active") {
+  1091→    return (
+  1092→      <div className="flex shrink-0 items-center gap-1">
+  1093→        <button
+  1094→          type="button"
+  1095→          disabled={busy}
+  1096→          onClick={() => handleUpdate("acknowledged")}
+  1097→          className={cn(btnCls, "hover:bg-[color:var(--soc-medium)]/15")}
+  1098→          style={{
+  1099→            color: "var(--soc-medium)",
+  1100→            borderColor: "color-mix(in oklch, var(--soc-medium) 40%, transparent)",
+  1101→          }}
+  1102→          title="Acknowledge this alert"
+  1103→        >
+  1104→          <Eye className="h-2.5 w-2.5" />
+  1105→          Ack
+  1106→        </button>
+  1107→        <button
+  1108→          type="button"
+  1109→          disabled={busy}
+  1110→          onClick={() => handleUpdate("resolved")}
+  1111→          className={cn(btnCls, "hover:bg-[color:var(--soc-success)]/15")}
+  1112→          style={{
+  1113→            color: "var(--soc-success)",
+  1114→            borderColor: "color-mix(in oklch, var(--soc-success) 40%, transparent)",
+  1115→          }}
+  1116→          title="Mark this alert as resolved"
+  1117→        >
+  1118→          <CheckCircle className="h-2.5 w-2.5" />
+  1119→          Resolve
+  1120→        </button>
+  1121→      </div>
+  1122→    );
+  1123→  }
+  1124→
+  1125→  if (alert.status === "acknowledged") {
+  1126→    return (
+  1127→      <div className="flex shrink-0 items-center gap-1">
+  1128→        <button
+  1129→          type="button"
+  1130→          disabled={busy}
+  1131→          onClick={() => handleUpdate("resolved")}
+  1132→          className={cn(btnCls, "hover:bg-[color:var(--soc-success)]/15")}
+  1133→          style={{
+  1134→            color: "var(--soc-success)",
+  1135→            borderColor: "color-mix(in oklch, var(--soc-success) 40%, transparent)",
+  1136→          }}
+  1137→          title="Mark this alert as resolved"
+  1138→        >
+  1139→          <CheckCircle className="h-2.5 w-2.5" />
+  1140→          Resolve
+  1141→        </button>
+  1142→        <button
+  1143→          type="button"
+  1144→          disabled={busy}
+  1145→          onClick={() => handleUpdate("active")}
+  1146→          className={cn(btnCls, "text-muted-foreground hover:text-foreground")}
+  1147→          title="Reopen this alert"
+  1148→        >
+  1149→          <RotateCcw className="h-2.5 w-2.5" />
+  1150→          Reopen
+  1151→        </button>
+  1152→      </div>
+  1153→    );
+  1154→  }
+  1155→
+  1156→  // resolved
+  1157→  return (
+  1158→    <div className="flex shrink-0 items-center gap-1">
+  1159→      <button
+  1160→        type="button"
+  1161→        disabled={busy}
+  1162→        onClick={() => handleUpdate("active")}
+  1163→        className={cn(btnCls, "text-muted-foreground hover:text-foreground")}
+  1164→        title="Reopen this alert"
+  1165→      >
+  1166→        <RotateCcw className="h-2.5 w-2.5" />
+  1167→        Reopen
+  1168→      </button>
+  1169→    </div>
+  1170→  );
+  1171→}
+  1172→
+  1173→function alertAccentColor(alert: SecurityAlert): string {
+  1174→  if (alert.status === "resolved") return "var(--soc-success)";
+  1175→  if (alert.status === "acknowledged") return "var(--soc-medium)";
+  1176→  return severityColor(alert.severity);
+  1177→}
+  1178→
+  1179→function AlertCard({
+  1180→  alert,
+  1181→  sessionId,
+  1182→  onUpdated,
+  1183→}: {
+  1184→  alert: SecurityAlert;
+  1185→  sessionId: string;
+  1186→  onUpdated: (alertId: string, status: AlertStatus) => void;
+  1187→}) {
+  1188→  const accent = alertAccentColor(alert);
+  1189→  const opacityCls =
+  1190→    alert.status === "resolved"
+  1191→      ? "opacity-50"
+  1192→      : alert.status === "acknowledged"
+  1193→        ? "opacity-80"
+  1194→        : "opacity-100";
+  1195→  return (
+  1196→    <div
+  1197→      className={cn(
+  1198→        "relative overflow-hidden rounded-md border bg-card/40 p-3 pl-3.5 transition-all",
+  1199→        opacityCls,
+  1200→      )}
+  1201→      style={{ borderColor: `color-mix(in oklch, ${accent} 30%, transparent)` }}
+  1202→    >
+  1203→      <div className="absolute left-0 top-0 h-full w-1" style={{ backgroundColor: accent }} aria-hidden />
+  1204→      <div className="flex flex-wrap items-center gap-1.5">
+  1205→        <SeverityBadge severity={alert.severity} size="sm" />
+  1206→        <AlertStatusBadge status={alert.status} />
+  1207→        <span
+  1208→          className={cn(
+  1209→            "font-mono-data text-[10px] font-semibold text-foreground",
+  1210→            alert.status === "resolved" && "line-through decoration-muted-foreground/60",
+  1211→          )}
+  1212→        >
+  1213→          {alert.ruleName}
+  1214→        </span>
+  1215→        <span className="font-mono-data text-[9px] text-muted-foreground">{alert.alertId}</span>
+  1216→        <span className="ml-auto font-mono-data text-[9px] text-muted-foreground" title={formatDateTime(alert.timestamp)}>
+  1217→          {formatTime(alert.timestamp)}
+  1218→        </span>
+  1219→      </div>
+  1220→      <p className="mt-1 text-[11px] leading-snug text-foreground/80">{alert.message}</p>
+  1221→      <div className="mt-1.5 flex items-center gap-3 font-mono-data text-[9px] text-muted-foreground">
+  1222→        <span>Rule: {alert.ruleId}</span>
+  1223→        <span>Conf: {alert.confidence}%</span>
+  1224→      </div>
+  1225→      {alert.recommendedAction && (
+  1226→        <div className="mt-1.5 rounded-sm border border-[color:var(--soc-success)]/30 bg-[color:var(--soc-success)]/10 px-2 py-1 text-[10px] text-[color:var(--soc-success)]">
+  1227→          <span className="font-mono-data font-semibold uppercase">Action:</span>{" "}
+  1228→          {alert.recommendedAction}
+  1229→        </div>
+  1230→      )}
+  1231→      <div className="mt-2 flex items-center justify-end gap-2 border-t border-border/30 pt-1.5">
+  1232→        <AlertActionButtons alert={alert} sessionId={sessionId} onUpdated={onUpdated} />
+  1233→      </div>
+  1234→    </div>
+  1235→  );
+  1236→}
+  1237→
+  1238→function AlertsTab({
+  1239→  alerts,
+  1240→  sessionId,
+  1241→  targetLabel,
+  1242→}: {
+  1243→  alerts: SecurityAlert[];
+  1244→  sessionId: string;
+  1245→  targetLabel: string;
+  1246→}) {
+  1247→  const [localAlerts, setLocalAlerts] = useState<SecurityAlert[]>(alerts);
+  1248→
+  1249→  // Sync local state when the parent's alerts list changes (e.g. on refetch).
+  1250→  useEffect(() => {
+  1251→    setLocalAlerts(alerts);
+  1252→  }, [alerts]);
+  1253→
+  1254→  const handleUpdated = useCallback((alertId: string, status: AlertStatus) => {
+  1255→    setLocalAlerts((prev) =>
+  1256→      prev.map((a) => (a.alertId === alertId ? { ...a, status } : a)),
+  1257→    );
+  1258→  }, []);
+  1259→
+  1260→  const counts = useMemo(() => {
+  1261→    let active = 0;
+  1262→    let ack = 0;
+  1263→    let resolved = 0;
+  1264→    for (const a of localAlerts) {
+  1265→      if (a.status === "active") active++;
+  1266→      else if (a.status === "acknowledged") ack++;
+  1267→      else if (a.status === "resolved") resolved++;
+  1268→    }
+  1269→    return { active, ack, resolved, total: localAlerts.length };
+  1270→  }, [localAlerts]);
+  1271→
+  1272→  return (
+  1273→    <div className="flex flex-col gap-3">
+  1274→      <div className="flex flex-wrap items-center gap-2 font-mono-data text-[10px] uppercase tracking-wider text-muted-foreground">
+  1275→        <SectionLabel>Alerts ({localAlerts.length})</SectionLabel>
+  1276→        <span className="ml-auto flex items-center gap-2">
+  1277→          <span title="Open (active) alerts">
+  1278→            <span className="text-[color:var(--soc-critical)]">{counts.active}</span> open
+  1279→          </span>
+  1280→          <span className="text-muted-foreground/40">·</span>
+  1281→          <span title="Acknowledged alerts">
+  1282→            <span className="text-[color:var(--soc-medium)]">{counts.ack}</span> ack
+  1283→          </span>
+  1284→          <span className="text-muted-foreground/40">·</span>
+  1285→          <span title="Resolved alerts">
+  1286→            <span className="text-[color:var(--soc-success)]">{counts.resolved}</span> resolved
+  1287→          </span>
+  1288→          <ExportMenu alerts={localAlerts} targetLabel={targetLabel} size="sm" />
+  1289→        </span>
+  1290→      </div>
+  1291→      {localAlerts.length === 0 ? (
+  1292→        <div className="flex items-center justify-center gap-2 rounded-md border border-dashed border-border/50 bg-card/30 px-4 py-8 text-[11px] text-muted-foreground">
+  1293→          <CheckCircle2 className="h-4 w-4 opacity-50" />
+  1294→          No alerts were recorded for this session.
+  1295→        </div>
+  1296→      ) : (
+  1297→        <div className="soc-scrollbar max-h-[540px] space-y-2 overflow-y-auto pr-1">
+  1298→          {localAlerts.map((a) => (
+  1299→            <AlertCard
+  1300→              key={a.id}
+  1301→              alert={a}
+  1302→              sessionId={sessionId}
+  1303→              onUpdated={handleUpdated}
+  1304→            />
+  1305→          ))}
+  1306→        </div>
+  1307→      )}
+  1308→    </div>
+  1309→  );
+  1310→}
+  1311→
+  1312→function OffenseScenarioCard({ scenario }: { scenario: OffenseScenario }) {
+  1313→  const sev = scenario.severity;
+  1314→  const color = severityColor(sev);
+  1315→  const steps = parseAttackPath(scenario.attackPath);
+  1316→  return (
+  1317→    <div
+  1318→      className="offense-surface relative flex flex-col overflow-hidden rounded-lg border bg-card/40 p-3 pl-4"
+  1319→      style={{ borderColor: `color-mix(in oklch, ${color} 30%, transparent)` }}
+  1320→    >
+  1321→      <div className="absolute left-0 top-0 h-full w-1" style={{ backgroundColor: color }} aria-hidden />
+  1322→      <div className="flex flex-wrap items-center gap-1.5">
+  1323→        <SeverityBadge severity={sev} size="sm" />
+  1324→        <StatusDot status={scenario.status} label={scenario.status.toUpperCase()} className="text-[9px]" />
+  1325→        {scenario.techniqueMitre && (
+  1326→          <span
+  1327→            className="rounded-sm border px-1 py-0.5 font-mono-data text-[9px] font-bold"
+  1328→            style={{
+  1329→              color,
+  1330→              borderColor: `color-mix(in oklch, ${color} 40%, transparent)`,
+  1331→              backgroundColor: `color-mix(in oklch, ${color} 12%, transparent)`,
+  1332→            }}
+  1333→          >
+  1334→            {scenario.techniqueMitre}
+  1335→          </span>
+  1336→        )}
+  1337→      </div>
+  1338→      <h4 className="mt-1.5 truncate font-mono-data text-[12px] font-bold leading-tight text-foreground" title={scenario.title}>
+  1339→        {scenario.title}
+  1340→      </h4>
+  1341→      <div className="mt-0.5 truncate font-mono-data text-[9px] text-muted-foreground">
+  1342→        {scenario.scenarioId} · {scenario.category}
+  1343→      </div>
+  1344→      {scenario.potentialImpact && (
+  1345→        <p className="mt-1.5 text-[10px] leading-snug text-foreground/70">
+  1346→          {scenario.potentialImpact}
+  1347→        </p>
+  1348→      )}
+  1349→      {steps.length > 0 && (
+  1350→        <div className="mt-2">
+  1351→          <SectionLabel>Attack Path</SectionLabel>
+  1352→          <div className="mt-1 flex flex-col gap-0.5">
+  1353→            {steps.map((s, i) => (
+  1354→              <div key={i} className="flex flex-col">
+  1355→                <div className="flex items-center gap-1.5">
+  1356→                  <span
+  1357→                    className="flex h-3.5 w-3.5 shrink-0 items-center justify-center rounded-sm font-mono-data text-[8px] font-bold"
+  1358→                    style={{
+  1359→                      color,
+  1360→                      backgroundColor: `color-mix(in oklch, ${color} 15%, transparent)`,
+  1361→                      border: `1px solid color-mix(in oklch, ${color} 35%, transparent)`,
+  1362→                    }}
+  1363→                  >
+  1364→                    {i + 1}
+  1365→                  </span>
+  1366→                  <span className="text-[10px] text-foreground/80">{s}</span>
+  1367→                </div>
+  1368→                {i < steps.length - 1 && (
+  1369→                  <div className="ml-1.5 flex h-2.5 items-center">
+  1370→                    <ArrowDown className="h-2.5 w-2.5 text-muted-foreground/50" />
+  1371→                  </div>
+  1372→                )}
+  1373→              </div>
+  1374→            ))}
+  1375→          </div>
+  1376→        </div>
+  1377→      )}
+  1378→      <div className="mt-2 flex items-center gap-3 border-t border-border/40 pt-1.5 font-mono-data text-[9px] text-muted-foreground">
+  1379→        <span>Conf {scenario.confidence}%</span>
+  1380→        <span>Evts {scenario.eventCount}</span>
+  1381→        <span>Sources {scenario.sourceCount}</span>
+  1382→      </div>
+  1383→    </div>
+  1384→  );
+  1385→}
+  1386→
+  1387→function OffenseTab({
+  1388→  scenarios,
+  1389→  onGoToOffense,
+  1390→}: {
+  1391→  scenarios: OffenseScenario[];
+  1392→  onGoToOffense: () => void;
+  1393→}) {
+  1394→  const sorted = useMemo(() => sortOffense(scenarios), [scenarios]);
+  1395→  return (
+  1396→    <div className="flex flex-col gap-3">
+  1397→      <div className="flex items-center justify-between">
+  1398→        <SectionLabel>Offense Scenarios ({sorted.length})</SectionLabel>
+  1399→        <Button
+  1400→          size="sm"
+  1401→          variant="outline"
+  1402→          onClick={onGoToOffense}
+  1403→          className="h-7 gap-1.5 text-[10px]"
+  1404→        >
+  1405→          <Swords className="h-3 w-3" />
+  1406→          View in Offense
+  1407→        </Button>
+  1408→      </div>
+  1409→      {sorted.length === 0 ? (
+  1410→        <div className="flex items-center justify-center gap-2 rounded-md border border-dashed border-border/50 bg-card/30 px-4 py-8 text-[11px] text-muted-foreground">
+  1411→          No offense scenarios were recorded for this session.
+  1412→        </div>
+  1413→      ) : (
+  1414→        <div className="grid grid-cols-1 gap-2.5 lg:grid-cols-2">
+  1415→          {sorted.map((s) => (
+  1416→            <OffenseScenarioCard key={s.scenarioId} scenario={s} />
+  1417→          ))}
+  1418→        </div>
+  1419→      )}
+  1420→    </div>
+  1421→  );
+  1422→}
+  1423→
+  1424→function DefenseScenarioCard({ scenario }: { scenario: DefenseScenario }) {
+  1425→  const color = severityColor(scenario.priority);
+  1426→  return (
+  1427→    <div
+  1428→      className="defense-surface relative flex flex-col overflow-hidden rounded-lg border bg-card/40 p-3 pl-4"
+  1429→      style={{ borderColor: `color-mix(in oklch, ${color} 30%, transparent)` }}
+  1430→    >
+  1431→      <div className="absolute left-0 top-0 h-full w-1" style={{ backgroundColor: color }} aria-hidden />
+  1432→      <div className="flex flex-wrap items-center gap-1.5">
+  1433→        <SeverityBadge severity={scenario.priority} size="sm" label={scenario.priority.toUpperCase()} />
+  1434→        <StatusDot status={scenario.status} label={scenario.status.toUpperCase()} className="text-[9px]" />
+  1435→        {scenario.relatedOffenseId && (
+  1436→          <span className="rounded-sm border border-[color:var(--soc-critical)]/30 bg-[color:var(--soc-critical)]/10 px-1 py-0.5 font-mono-data text-[8px] font-bold uppercase text-[color:var(--soc-critical)]">
+  1437→            {scenario.relatedOffenseId}
+  1438→          </span>
+  1439→        )}
+  1440→      </div>
+  1441→      <h4 className="mt-1.5 truncate font-mono-data text-[12px] font-bold leading-tight text-foreground" title={scenario.title}>
+  1442→        {scenario.title}
+  1443→      </h4>
+  1444→      <div className="mt-0.5 truncate font-mono-data text-[9px] text-muted-foreground">
+  1445→        {scenario.scenarioId} · {scenario.category}
+  1446→      </div>
+  1447→      {scenario.recommendedAction && (
+  1448→        <div className="mt-1.5 rounded-sm border border-[color:var(--soc-success)]/30 bg-[color:var(--soc-success)]/10 px-2 py-1 text-[10px] text-[color:var(--soc-success)]">
+  1449→          <span className="font-mono-data font-semibold uppercase">Action:</span>{" "}
+  1450→          {scenario.recommendedAction}
+  1451→        </div>
+  1452→      )}
+  1453→      <div className="mt-2 grid grid-cols-2 gap-x-2 gap-y-1 text-[10px] text-muted-foreground">
+  1454→        {scenario.detect && (
+  1455→          <div className="col-span-2">
+  1456→            <span className="font-mono-data text-[9px] uppercase text-[color:var(--soc-low)]">Detect: </span>
+  1457→            {scenario.detect}
+  1458→          </div>
+  1459→        )}
+  1460→        {scenario.prevent && (
+  1461→          <div className="col-span-2">
+  1462→            <span className="font-mono-data text-[9px] uppercase text-[color:var(--soc-low)]">Prevent: </span>
+  1463→            {scenario.prevent}
+  1464→          </div>
+  1465→        )}
+  1466→      </div>
+  1467→    </div>
+  1468→  );
+  1469→}
+  1470→
+  1471→function DefenseTab({
+  1472→  scenarios,
+  1473→  onGoToDefense,
+  1474→}: {
+  1475→  scenarios: DefenseScenario[];
+  1476→  onGoToDefense: () => void;
+  1477→}) {
+  1478→  const sorted = useMemo(() => sortDefense(scenarios), [scenarios]);
+  1479→  return (
+  1480→    <div className="flex flex-col gap-3">
+  1481→      <div className="flex items-center justify-between">
+  1482→        <SectionLabel>Defense Scenarios ({sorted.length})</SectionLabel>
+  1483→        <Button
+  1484→          size="sm"
+  1485→          variant="outline"
+  1486→          onClick={onGoToDefense}
+  1487→          className="h-7 gap-1.5 text-[10px]"
+  1488→        >
+  1489→          <Shield className="h-3 w-3" />
+  1490→          View in Defense
+  1491→        </Button>
+  1492→      </div>
+  1493→      {sorted.length === 0 ? (
+  1494→        <div className="flex items-center justify-center gap-2 rounded-md border border-dashed border-border/50 bg-card/30 px-4 py-8 text-[11px] text-muted-foreground">
+  1495→          No defense scenarios were recorded for this session.
+  1496→        </div>
+  1497→      ) : (
+  1498→        <div className="grid grid-cols-1 gap-2.5 lg:grid-cols-2">
+  1499→          {sorted.map((s) => (
+  1500→            <DefenseScenarioCard key={s.scenarioId} scenario={s} />
+  1501→          ))}
+  1502→        </div>
+  1503→      )}
+  1504→    </div>
+  1505→  );
+  1506→}
+  1507→
+  1508→function ActionsTab({
+  1509→  session,
+  1510→  onClose,
+  1511→}: {
+  1512→  session: MonitoringSessionInfo;
+  1513→  onClose: () => void;
+  1514→}) {
+  1515→  const setView = useAppStore((s) => s.setView);
+  1516→  const [generating, setGenerating] = useState(false);
+  1517→  const handleGenerate = async () => {
+  1518→    setGenerating(true);
+  1519→    try {
+  1520→      await api.generateReport(session.id);
+  1521→      toast.success("Report generated. View it in the Reports view.");
+  1522→    } catch (e) {
+  1523→      const msg = e instanceof Error ? e.message : "Failed to generate report.";
+  1524→      toast.error(msg);
+  1525→    } finally {
+  1526→      setGenerating(false);
+  1527→    }
+  1528→  };
+  1529→  return (
+  1530→    <div className="flex flex-col gap-3">
+  1531→      <SectionLabel>Actions</SectionLabel>
+  1532→      <div className="rounded-md border border-border/40 bg-card/30 p-3">
+  1533→        <div className="flex items-start gap-2">
+  1534→          <FileText className="mt-0.5 h-4 w-4 shrink-0 text-[color:var(--soc-low)]" />
+  1535→          <div className="min-w-0 flex-1">
+  1536→            <div className="font-mono-data text-[11px] font-semibold text-foreground">
+  1537→              Generate Professional Report
+  1538→            </div>
+  1539→            <p className="mt-0.5 text-[10px] text-muted-foreground">
+  1540→              Produce a complete PDF-format security monitoring report from this
+  1541→              session, including executive summary, assessment details, monitoring
+  1542→              statistics, security findings, scenario analysis, recommendations,
+  1543→              and a technical appendix.
+  1544→            </p>
+  1545→            <div className="mt-2 flex flex-wrap items-center gap-2">
+  1546→              <Button size="sm" onClick={handleGenerate} disabled={generating} className="h-7 gap-1.5 text-[11px]">
+  1547→                {generating ? <RefreshCw className="h-3 w-3 animate-spin" /> : <FileText className="h-3 w-3" />}
+  1548→                {generating ? "Generating…" : "Generate Report"}
+  1549→              </Button>
+  1550→              <Button
+  1551→                size="sm"
+  1552→                variant="outline"
+  1553→                onClick={() => {
+  1554→                  onClose();
+  1555→                  setView("reports");
+  1556→                }}
+  1557→                className="h-7 gap-1.5 text-[11px]"
+  1558→              >
+  1559→                Go to Reports
+  1560→                <ArrowRight className="h-3 w-3" />
+  1561→              </Button>
+  1562→            </div>
+  1563→          </div>
+  1564→        </div>
+  1565→      </div>
+  1566→      <div className="rounded-md border border-[color:var(--soc-medium)]/30 bg-[color:var(--soc-medium)]/5 p-3">
+  1567→        <div className="flex items-start gap-2">
+  1568→          <ShieldAlert className="mt-0.5 h-4 w-4 shrink-0 text-[color:var(--soc-medium)]" />
+  1569→          <div>
+  1570→            <div className="font-mono-data text-[10px] font-semibold uppercase tracking-wider text-[color:var(--soc-medium)]">
+  1571→              Defensive Analysis
+  1572→            </div>
+  1573→            <p className="mt-0.5 text-[10px] leading-snug text-muted-foreground">
+  1574→              Scenario data is derived from observed telemetry and detected
+  1575→              patterns. It does NOT confirm a successful attack. Correlate with
+  1576→              authorized scope and additional evidence before action.
+  1577→            </p>
+  1578→          </div>
+  1579→        </div>
+  1580→      </div>
+  1581→    </div>
+  1582→  );
+  1583→}
+  1584→
+  1585→function DetailDialog({
+  1586→  session,
+  1587→  open,
+  1588→  onOpenChange,
+  1589→}: {
+  1590→  session: MonitoringSessionInfo | null;
+  1591→  open: boolean;
+  1592→  onOpenChange: (o: boolean) => void;
+  1593→}) {
+  1594→  const [detail, setDetail] = useState<HistoryDetailResponse | null>(null);
+  1595→  const [loading, setLoading] = useState(false);
+  1596→  const [error, setError] = useState<string | null>(null);
+  1597→  const setHistoricalSession = useAppStore((s) => s.setHistoricalSession);
+  1598→  const setView = useAppStore((s) => s.setView);
+  1599→
+  1600→  useEffect(() => {
+  1601→    if (!open || !session) {
+  1602→      setDetail(null);
+  1603→      setError(null);
+  1604→      return;
+  1605→    }
+  1606→    let cancelled = false;
+  1607→    const run = async () => {
+  1608→      setLoading(true);
+  1609→      setError(null);
+  1610→      try {
+  1611→        const res = await api.getHistoryDetail(session.id);
+  1612→        if (cancelled) return;
+  1613→        const normalized: HistoryDetailResponse = {
+  1614→          session: normalizeSession(res.session),
+  1615→          assessment: normalizeAssessment(res.assessment),
+  1616→          events: (res.events ?? []).map(normalizeEvent),
+  1617→          alerts: (res.alerts ?? []).map(normalizeAlert),
+  1618→          offenseScenarios: (res.offenseScenarios ?? []).map(normalizeOffenseScenario),
+  1619→          defenseScenarios: (res.defenseScenarios ?? []).map(normalizeDefenseScenario),
+  1620→        };
+  1621→        setDetail(normalized);
+  1622→      } catch (e) {
+  1623→        if (cancelled) return;
+  1624→        const msg = e instanceof Error ? e.message : "Failed to load session detail.";
+  1625→        setError(msg);
+  1626→        toast.error(msg);
+  1627→      } finally {
+  1628→        if (!cancelled) setLoading(false);
+  1629→      }
+  1630→    };
+  1631→    void run();
+  1632→    return () => {
+  1633→      cancelled = true;
+  1634→    };
+  1635→  }, [open, session]);
+  1636→
+  1637→  const eventsTotal = (detail?.events?.length ?? 0);
+  1638→  const dialogSession = session;
+  1639→
+  1640→  return (
+  1641→    <Dialog open={open} onOpenChange={onOpenChange}>
+  1642→      <DialogContent className="max-h-[92vh] max-w-5xl gap-0 overflow-y-auto p-0 sm:max-w-5xl">
+  1643→        <DialogHeader className="border-b border-border/40 px-4 py-3 text-left">
+  1644→          <DialogTitle className="flex items-center gap-2 font-mono-data text-sm uppercase tracking-wider">
+  1645→            <ScrollText className="h-4 w-4 text-[color:var(--soc-low)]" />
+  1646→            Historical Session Detail
+  1647→            {dialogSession && (
+  1648→              <span className="font-mono-data text-[10px] font-normal text-muted-foreground">
+  1649→                {dialogSession.id}
+  1650→              </span>
+  1651→            )}
+  1652→          </DialogTitle>
+  1653→          <DialogDescription className="text-[10px] uppercase tracking-wider text-muted-foreground">
+  1654→            Persistent record of a previously completed monitoring session.
+  1655→          </DialogDescription>
+  1656→        </DialogHeader>
+  1657→        <div className="p-4">
+  1658→          {loading ? (
+  1659→            <div className="space-y-2">
+  1660→              {[0, 1, 2, 3, 4].map((i) => (
+  1661→                <Skeleton key={i} className="h-12 w-full" />
+  1662→              ))}
+  1663→            </div>
+  1664→          ) : error ? (
+  1665→            <div className="rounded-md border border-[color:var(--soc-critical)]/40 bg-[color:var(--soc-critical)]/10 px-3 py-3 text-[11px] text-[color:var(--soc-critical)]">
+  1666→              {error}
+  1667→            </div>
+  1668→          ) : detail && dialogSession ? (
+  1669→            <Tabs defaultValue="overview" className="gap-3">
+  1670→              <TabsList className="bg-card/40">
+  1671→                <TabsTrigger value="overview" className="text-[11px]">Overview</TabsTrigger>
+  1672→                <TabsTrigger value="events" className="text-[11px]">
+  1673→                  Events ({detail.events.length})
+  1674→                </TabsTrigger>
+  1675→                <TabsTrigger value="alerts" className="text-[11px]">
+  1676→                  Alerts ({detail.alerts.length})
+  1677→                </TabsTrigger>
+  1678→                <TabsTrigger value="offense" className="text-[11px]">
+  1679→                  Offense ({detail.offenseScenarios.length})
+  1680→                </TabsTrigger>
+  1681→                <TabsTrigger value="defense" className="text-[11px]">
+  1682→                  Defense ({detail.defenseScenarios.length})
+  1683→                </TabsTrigger>
+  1684→                <TabsTrigger value="actions" className="text-[11px]">Actions</TabsTrigger>
+  1685→              </TabsList>
+  1686→              <TabsContent value="overview">
+  1687→                <OverviewTab session={detail.session} assessment={detail.assessment} />
+  1688→              </TabsContent>
+  1689→              <TabsContent value="events">
+  1690→                <EventsTab events={detail.events} eventsTotal={eventsTotal} targetLabel={detail.session.targetAddress || detail.target?.address || "session"} />
+  1691→              </TabsContent>
+  1692→              <TabsContent value="alerts">
+  1693→                <AlertsTab alerts={detail.alerts} sessionId={detail.session.id} targetLabel={detail.session.targetAddress || detail.target?.address || "session"} />
+  1694→              </TabsContent>
+  1695→              <TabsContent value="offense">
+  1696→                <OffenseTab
+  1697→                  scenarios={detail.offenseScenarios}
+  1698→                  onGoToOffense={() => {
+  1699→                    setHistoricalSession(detail.session);
+  1700→                    onOpenChange(false);
+  1701→                    setView("offense");
+  1702→                  }}
+  1703→                />
+  1704→              </TabsContent>
+  1705→              <TabsContent value="defense">
+  1706→                <DefenseTab
+  1707→                  scenarios={detail.defenseScenarios}
+  1708→                  onGoToDefense={() => {
+  1709→                    setHistoricalSession(detail.session);
+  1710→                    onOpenChange(false);
+  1711→                    setView("defense");
+  1712→                  }}
+  1713→                />
+  1714→              </TabsContent>
+  1715→              <TabsContent value="actions">
+  1716→                <ActionsTab
+  1717→                  session={detail.session}
+  1718→                  onClose={() => onOpenChange(false)}
+  1719→                />
+  1720→              </TabsContent>
+  1721→            </Tabs>
+  1722→          ) : null}
+  1723→        </div>
+  1724→      </DialogContent>
+  1725→    </Dialog>
+  1726→  );
+  1727→}
+  1728→
+  1729→// ============================================================
+  1730→// Main View
+  1731→// ============================================================
+  1732→
+  1733→export function HistoryView() {
+  1734→  const [sessions, setSessions] = useState<MonitoringSessionInfo[]>([]);
+  1735→  const [total, setTotal] = useState(0);
+  1736→  const [page, setPage] = useState(1);
+  1737→  const [pageSize, setPageSize] = useState(20);
+  1738→  const [statusFilter, setStatusFilter] = useState("all");
+  1739→  const [targetSearch, setTargetSearch] = useState("");
+  1740→  const [loading, setLoading] = useState(false);
+  1741→  const [error, setError] = useState<string | null>(null);
+  1742→  const [selected, setSelected] = useState<MonitoringSessionInfo | null>(null);
+  1743→  const [dialogOpen, setDialogOpen] = useState(false);
+  1744→
+  1745→  // Debounce target search
+  1746→  const [searchInput, setSearchInput] = useState("");
+  1747→  useEffect(() => {
+  1748→    const id = setTimeout(() => setTargetSearch(searchInput.trim()), 350);
+  1749→    return () => clearTimeout(id);
+  1750→  }, [searchInput]);
+  1751→
+  1752→  // Reset to page 1 when filters change
+  1753→  useEffect(() => {
+  1754→    setPage(1);
+  1755→  }, [statusFilter, targetSearch, pageSize]);
+  1756→
+  1757→  const fetchHistory = async () => {
+  1758→    setLoading(true);
+  1759→    setError(null);
+  1760→    try {
+  1761→      const res: HistoryListResponse = await api.getHistory({
+  1762→        page,
+  1763→        pageSize,
+  1764→        status: statusFilter === "all" ? undefined : statusFilter,
+  1765→        target: targetSearch || undefined,
+  1766→      });
+  1767→      const normalized = (res.sessions ?? []).map(normalizeSession);
+  1768→      setSessions(normalized);
+  1769→      setTotal(res.total ?? 0);
+  1770→    } catch (e) {
+  1771→      const msg = e instanceof Error ? e.message : "Failed to load history.";
+  1772→      setError(msg);
+  1773→      toast.error(msg);
+  1774→    } finally {
+  1775→      setLoading(false);
+  1776→    }
+  1777→  };
+  1778→
+  1779→  useEffect(() => {
+  1780→    void fetchHistory();
+  1781→  }, [page, pageSize, statusFilter, targetSearch]);
+  1782→
+  1783→  const handleOpen = (s: MonitoringSessionInfo) => {
+  1784→    setSelected(s);
+  1785→    setDialogOpen(true);
+  1786→  };
+  1787→
+  1788→  const totals = useMemo(() => {
+  1789→    let totalEvents = 0;
+  1790→    let totalAlerts = 0;
+  1791→    for (const s of sessions) {
+  1792→      totalEvents += s.eventCount;
+  1793→      totalAlerts += s.alertCount;
+  1794→    }
+  1795→    return { totalEvents, totalAlerts };
+  1796→  }, [sessions]);
+  1797→
+  1798→  const showEmpty = !loading && !error && sessions.length === 0;
+  1799→
+  1800→  return (
+  1801→    <div className="flex h-full flex-col overflow-hidden">
+  1802→      <HistoryHeader
+  1803→        onRefresh={() => void fetchHistory()}
+  1804→        refreshing={loading}
+  1805→        statusFilter={statusFilter}
+  1806→        setStatusFilter={setStatusFilter}
+  1807→        targetSearch={searchInput}
+  1808→        setTargetSearch={setSearchInput}
+  1809→        pageSize={pageSize}
+  1810→        setPageSize={setPageSize}
+  1811→      />
+  1812→
+  1813→      <div className="shrink-0 border-b border-border/40 px-3 py-3">
+  1814→        <SummaryRow
+  1815→          total={total}
+  1816→          totalEvents={totals.totalEvents}
+  1817→          totalAlerts={totals.totalAlerts}
+  1818→        />
+  1819→      </div>
+  1820→
+  1821→      <div className="soc-scrollbar min-h-0 flex-1 overflow-y-auto overflow-x-hidden">
+  1822→        {showEmpty ? (
+  1823→          <NoHistoryEmptyState />
+  1824→        ) : (
+  1825→          <div className="flex flex-col gap-3 p-3">
+  1826→            {error && (
+  1827→              <div className="flex items-center gap-2 rounded-md border border-[color:var(--soc-critical)]/40 bg-[color:var(--soc-critical)]/10 px-3 py-2 text-[11px] text-[color:var(--soc-critical)]">
+  1828→                <XCircle className="h-3.5 w-3.5" />
+  1829→                {error}
+  1830→              </div>
+  1831→            )}
+  1832→            <SessionsTable
+  1833→              sessions={sessions}
+  1834→              loading={loading}
+  1835→              onOpen={handleOpen}
+  1836→            />
+  1837→            {sessions.length > 0 && (
+  1838→              <Pagination
+  1839→                page={page}
+  1840→                pageSize={pageSize}
+  1841→                total={total}
+  1842→                onPage={setPage}
+  1843→              />
+  1844→            )}
+  1845→          </div>
+  1846→        )}
+  1847→      </div>
+  1848→
+  1849→      <DetailDialog
+  1850→        session={selected}
+  1851→        open={dialogOpen}
+  1852→        onOpenChange={setDialogOpen}
+  1853→      />
+  1854→    </div>
+  1855→  );
+  1856→}
+  1857→

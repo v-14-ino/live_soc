@@ -50,6 +50,7 @@ import { ExportMenu } from "@/components/soc/export-menu";
 import { ThreatMapPanel } from "@/components/soc/threat-map-panel";
 import { RiskGaugePanel } from "@/components/soc/risk-gauge-panel";
 import { MitreMatrixPanel } from "@/components/soc/mitre-matrix-panel";
+import { SourceIpReputationPanel } from "@/components/soc/source-ip-reputation-panel";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import {
@@ -1967,6 +1968,11 @@ function MitreMatrixSection() {
   return <MitreMatrixPanel scenarios={scenarios} />;
 }
 
+function SourceIpReputationSection() {
+  const events = useAppStore((s) => s.events);
+  return <SourceIpReputationPanel events={events} />;
+}
+
 export function LiveMonitorView() {
   return (
     <div className="flex h-full flex-col overflow-hidden">
@@ -1987,9 +1993,10 @@ export function LiveMonitorView() {
             <NetworkActivityPanel />
             <ThreatMapSection />
           </div>
-          <div className="grid grid-cols-1 gap-3 lg:grid-cols-2">
+          <div className="grid grid-cols-1 gap-3 lg:grid-cols-2 xl:grid-cols-3">
             <RiskGaugeSection />
             <MitreMatrixSection />
+            <SourceIpReputationSection />
           </div>
         </div>
       </div>

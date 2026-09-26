@@ -20,6 +20,8 @@ import {
   ArrowDown,
   CheckCircle2,
   XCircle,
+  GitCompare,
+  X,
   type LucideIcon,
 } from "lucide-react";
 import { useAppStore } from "@/lib/store";
@@ -30,9 +32,11 @@ import { StatusDot } from "@/components/soc/status-dot";
 import { AuthWarning } from "@/components/soc/auth-warning";
 import { ExportMenu } from "@/components/soc/export-menu";
 import { TimelineScrubber } from "@/components/soc/timeline-scrubber";
+import { CompareSessionsDialog } from "@/components/soc/compare-sessions-dialog";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Skeleton } from "@/components/ui/skeleton";
+import { Checkbox } from "@/components/ui/checkbox";
 import {
   Select,
   SelectContent,
@@ -417,6 +421,9 @@ function HistoryHeader({
   setTargetSearch,
   pageSize,
   setPageSize,
+  compareMode,
+  onToggleCompare,
+  selectedCount,
 }: {
   onRefresh: () => void;
   refreshing: boolean;
@@ -426,6 +433,9 @@ function HistoryHeader({
   setTargetSearch: (v: string) => void;
   pageSize: number;
   setPageSize: (v: number) => void;
+  compareMode: boolean;
+  onToggleCompare: () => void;
+  selectedCount: number;
 }) {
   return (
     <div className="shrink-0 border-b border-border/40 bg-card/30 px-4 py-3">
@@ -445,6 +455,26 @@ function HistoryHeader({
         </div>
         <div className="flex items-center gap-2">
           <AuthWarning variant="inline" className="hidden md:flex" />
+          <Button
+            size="sm"
+            variant={compareMode ? "default" : "outline"}
+            onClick={onToggleCompare}
+            className="h-7 gap-1.5 text-[11px]"
+            aria-pressed={compareMode}
+            title={
+              compareMode
+                ? "Exit compare mode"
+                : "Select two sessions to compare their security posture"
+            }
+          >
+            <GitCompare className="h-3 w-3" />
+            {compareMode ? "Comparing" : "Compare"}
+            {compareMode && selectedCount > 0 && (
+              <span className="ml-0.5 inline-flex h-4 min-w-4 items-center justify-center rounded-sm bg-background/30 px-1 font-mono-data text-[9px] font-bold">
+                {selectedCount}/2
+              </span>
+            )}
+          </Button>
           <Button
             size="sm"
             variant="outline"
@@ -552,10 +582,16 @@ function SessionsTable({
   sessions,
   loading,
   onOpen,
+  compareMode,
+  selectedIds,
+  onToggleSelect,
 }: {
   sessions: MonitoringSessionInfo[];
   loading: boolean;
   onOpen: (s: MonitoringSessionInfo) => void;
+  compareMode: boolean;
+  selectedIds: string[];
+  onToggleSelect: (id: string) => void;
 }) {
   if (loading) {
     return (
@@ -569,11 +605,20 @@ function SessionsTable({
     );
   }
   if (sessions.length === 0) return null;
+
+  const selectedSet = new Set(selectedIds);
+  const atCapacity = selectedIds.length >= 2;
+
+  const headers = compareMode
+    ? ["", "Assessment ID", "Target", "Start", "End", "Dur", "Status", "Evts", "Alrts", "Risk Summary", ""]
+    : ["Assessment ID", "Target", "Start", "End", "Dur", "Status", "Evts", "Alrts", "Risk Summary", "Actions"];
+
   return (
     <div className="overflow-hidden rounded-lg border border-border/40 bg-card/30">
       <div className="soc-scrollbar max-h-[calc(100vh-380px)] min-h-[200px] overflow-auto">
         <table className="w-full table-fixed border-collapse text-[11px]">
           <colgroup>
+            {compareMode && <col className="w-[36px]" />}
             <col className="w-[170px]" />
             <col className="w-[120px]" />
             <col className="w-[140px]" />
@@ -587,68 +632,121 @@ function SessionsTable({
           </colgroup>
           <thead className="sticky top-0 z-10 bg-card/95 backdrop-blur-sm">
             <tr className="border-b border-border/50">
-              {["Assessment ID", "Target", "Start", "End", "Dur", "Status", "Evts", "Alrts", "Risk Summary", "Actions"].map(
-                (h) => (
-                  <th
-                    key={h}
-                    className="px-2 py-2 text-left font-mono-data text-[9px] font-semibold uppercase tracking-wider text-muted-foreground/80"
-                  >
-                    {h}
-                  </th>
-                ),
-              )}
+              {headers.map((h, i) => (
+                <th
+                  key={`${h}-${i}`}
+                  className="px-2 py-2 text-left font-mono-data text-[9px] font-semibold uppercase tracking-wider text-muted-foreground/80"
+                >
+                  {h}
+                </th>
+              ))}
             </tr>
           </thead>
           <tbody>
-            {sessions.map((s) => (
-              <tr
-                key={s.id}
-                onClick={() => onOpen(s)}
-                className="group cursor-pointer border-b border-border/20 transition-colors hover:bg-[color:var(--soc-low)]/5 last:border-b-0"
-              >
-                <td className="truncate px-2 py-2 font-mono-data text-[10px] text-[color:var(--soc-low)] group-hover:underline">
-                  <span title={s.id}>{s.id.slice(0, 16)}…</span>
-                </td>
-                <td className="truncate px-2 py-2 font-mono-data text-[10px] text-foreground/90" title={s.targetAddress}>
-                  {s.targetAddress}
-                </td>
-                <td className="px-2 py-2 font-mono-data text-[10px] text-muted-foreground" title={formatDateTime(s.startedAt)}>
-                  {formatDateTime(s.startedAt)}
-                </td>
-                <td className="px-2 py-2 font-mono-data text-[10px] text-muted-foreground" title={formatDateTime(s.endedAt)}>
-                  {s.endedAt ? formatDateTime(s.endedAt) : "—"}
-                </td>
-                <td className="px-2 py-2 font-mono-data text-[10px] text-muted-foreground">
-                  {durationLabel(s.durationSec)}
-                </td>
-                <td className="px-2 py-2">
-                  <StatusDot status={s.status} label={s.status.toUpperCase()} className="text-[9px]" />
-                </td>
-                <td className="px-2 py-2 font-mono-data text-[10px] text-foreground/90">
-                  {s.eventCount}
-                </td>
-                <td className="px-2 py-2 font-mono-data text-[10px] text-foreground/90">
-                  {s.alertCount}
-                </td>
-                <td className="truncate px-2 py-2 text-[10px] text-muted-foreground" title={s.riskSummary ?? ""}>
-                  {s.riskSummary ?? "—"}
-                </td>
-                <td className="px-2 py-2">
-                  <Button
-                    size="sm"
-                    variant="ghost"
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      onOpen(s);
-                    }}
-                    className="h-6 gap-1 px-2 text-[10px] text-muted-foreground hover:text-[color:var(--soc-low)]"
-                  >
-                    <Eye className="h-3 w-3" />
-                    View
-                  </Button>
-                </td>
-              </tr>
-            ))}
+            {sessions.map((s, idx) => {
+              const isSelected = selectedSet.has(s.id);
+              const disabled = !isSelected && atCapacity;
+              const selectionOrder = isSelected ? selectedIds.indexOf(s.id) + 1 : 0;
+              return (
+                <tr
+                  key={s.id}
+                  onClick={() => (compareMode ? onToggleSelect(s.id) : onOpen(s))}
+                  className={cn(
+                    "group border-b border-border/20 transition-colors last:border-b-0",
+                    compareMode
+                      ? "cursor-default hover:bg-muted/20"
+                      : "cursor-pointer hover:bg-[color:var(--soc-low)]/5",
+                    isSelected && "bg-[color:var(--soc-low)]/10",
+                  )}
+                >
+                  {compareMode && (
+                    <td className="px-2 py-2" onClick={(e) => e.stopPropagation()}>
+                      <div className="flex items-center justify-center">
+                        <Checkbox
+                          checked={isSelected}
+                          disabled={disabled}
+                          onCheckedChange={() => onToggleSelect(s.id)}
+                          aria-label={`Select session ${s.id} for comparison`}
+                          className={cn(
+                            "data-[state=checked]:border-[color:var(--soc-low)] data-[state=checked]:bg-[color:var(--soc-low)] data-[state=checked]:text-[color:var(--soc-low)]",
+                            disabled && "opacity-40",
+                          )}
+                        />
+                      </div>
+                    </td>
+                  )}
+                  <td className="truncate px-2 py-2 font-mono-data text-[10px] text-[color:var(--soc-low)]">
+                    <div className="flex items-center gap-1.5">
+                      {isSelected && (
+                        <span
+                          className="inline-flex h-4 min-w-4 items-center justify-center rounded-sm px-1 font-mono-data text-[9px] font-bold text-[color:var(--soc-low)]"
+                          style={{
+                            backgroundColor: "color-mix(in oklch, var(--soc-low) 18%, transparent)",
+                            border: "1px solid color-mix(in oklch, var(--soc-low) 45%, transparent)",
+                          }}
+                          title={`Selected as session ${selectionOrder === 1 ? "A" : "B"}`}
+                        >
+                          {selectionOrder === 1 ? "A" : "B"}
+                        </span>
+                      )}
+                      <span
+                        className={cn("truncate", !compareMode && "group-hover:underline")}
+                        title={s.id}
+                      >
+                        {s.id.slice(0, 16)}…
+                      </span>
+                    </div>
+                  </td>
+                  <td className="truncate px-2 py-2 font-mono-data text-[10px] text-foreground/90" title={s.targetAddress}>
+                    {s.targetAddress}
+                  </td>
+                  <td className="px-2 py-2 font-mono-data text-[10px] text-muted-foreground" title={formatDateTime(s.startedAt)}>
+                    {formatDateTime(s.startedAt)}
+                  </td>
+                  <td className="px-2 py-2 font-mono-data text-[10px] text-muted-foreground" title={formatDateTime(s.endedAt)}>
+                    {s.endedAt ? formatDateTime(s.endedAt) : "—"}
+                  </td>
+                  <td className="px-2 py-2 font-mono-data text-[10px] text-muted-foreground">
+                    {durationLabel(s.durationSec)}
+                  </td>
+                  <td className="px-2 py-2">
+                    <StatusDot status={s.status} label={s.status.toUpperCase()} className="text-[9px]" />
+                  </td>
+                  <td className="px-2 py-2 font-mono-data text-[10px] text-foreground/90">
+                    {s.eventCount}
+                  </td>
+                  <td className="px-2 py-2 font-mono-data text-[10px] text-foreground/90">
+                    {s.alertCount}
+                  </td>
+                  <td className="truncate px-2 py-2 text-[10px] text-muted-foreground" title={s.riskSummary ?? ""}>
+                    {s.riskSummary ?? "—"}
+                  </td>
+                  <td className="px-2 py-2">
+                    {compareMode ? (
+                      <span
+                        className="font-mono-data text-[9px] uppercase tracking-wider text-muted-foreground/60"
+                        title={`Row ${idx + 1}`}
+                      >
+                        #{idx + 1}
+                      </span>
+                    ) : (
+                      <Button
+                        size="sm"
+                        variant="ghost"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          onOpen(s);
+                        }}
+                        className="h-6 gap-1 px-2 text-[10px] text-muted-foreground hover:text-[color:var(--soc-low)]"
+                      >
+                        <Eye className="h-3 w-3" />
+                        View
+                      </Button>
+                    )}
+                  </td>
+                </tr>
+              );
+            })}
           </tbody>
         </table>
       </div>
@@ -1742,6 +1840,11 @@ export function HistoryView() {
   const [selected, setSelected] = useState<MonitoringSessionInfo | null>(null);
   const [dialogOpen, setDialogOpen] = useState(false);
 
+  // Compare mode state
+  const [compareMode, setCompareMode] = useState(false);
+  const [selectedIds, setSelectedIds] = useState<string[]>([]);
+  const [compareDialogOpen, setCompareDialogOpen] = useState(false);
+
   // Debounce target search
   const [searchInput, setSearchInput] = useState("");
   useEffect(() => {
@@ -1785,6 +1888,37 @@ export function HistoryView() {
     setDialogOpen(true);
   };
 
+  const handleToggleCompare = useCallback(() => {
+    setCompareMode((prev) => {
+      const next = !prev;
+      if (!next) setSelectedIds([]);
+      return next;
+    });
+  }, []);
+
+  const handleToggleSelect = useCallback((id: string) => {
+    setSelectedIds((prev) => {
+      if (prev.includes(id)) return prev.filter((x) => x !== id);
+      if (prev.length >= 2) return prev; // safety guard
+      return [...prev, id];
+    });
+  }, []);
+
+  const handleClearSelection = useCallback(() => setSelectedIds([]), []);
+
+  const handleOpenCompare = useCallback(() => {
+    if (selectedIds.length !== 2) {
+      toast.error("Select exactly two sessions to compare.");
+      return;
+    }
+    setCompareDialogOpen(true);
+  }, [selectedIds.length]);
+
+  const handleExitCompare = useCallback(() => {
+    setCompareMode(false);
+    setSelectedIds([]);
+  }, []);
+
   const totals = useMemo(() => {
     let totalEvents = 0;
     let totalAlerts = 0;
@@ -1797,6 +1931,12 @@ export function HistoryView() {
 
   const showEmpty = !loading && !error && sessions.length === 0;
 
+  // Selected session summaries for the floating action bar
+  const selectedSessions = useMemo(
+    () => selectedIds.map((id) => sessions.find((s) => s.id === id)).filter(Boolean) as MonitoringSessionInfo[],
+    [selectedIds, sessions],
+  );
+
   return (
     <div className="flex h-full flex-col overflow-hidden">
       <HistoryHeader
@@ -1808,6 +1948,9 @@ export function HistoryView() {
         setTargetSearch={setSearchInput}
         pageSize={pageSize}
         setPageSize={setPageSize}
+        compareMode={compareMode}
+        onToggleCompare={handleToggleCompare}
+        selectedCount={selectedIds.length}
       />
 
       <div className="shrink-0 border-b border-border/40 px-3 py-3">
@@ -1818,21 +1961,40 @@ export function HistoryView() {
         />
       </div>
 
-      <div className="soc-scrollbar min-h-0 flex-1 overflow-y-auto overflow-x-hidden">
+      <div className="soc-scrollbar relative min-h-0 flex-1 overflow-y-auto overflow-x-hidden">
         {showEmpty ? (
           <NoHistoryEmptyState />
         ) : (
-          <div className="flex flex-col gap-3 p-3">
+          <div className="flex flex-col gap-3 p-3 pb-24">
             {error && (
               <div className="flex items-center gap-2 rounded-md border border-[color:var(--soc-critical)]/40 bg-[color:var(--soc-critical)]/10 px-3 py-2 text-[11px] text-[color:var(--soc-critical)]">
                 <XCircle className="h-3.5 w-3.5" />
                 {error}
               </div>
             )}
+            {compareMode && (
+              <div className="flex items-center gap-2 rounded-md border border-[color:var(--soc-low)]/30 bg-[color:var(--soc-low)]/5 px-3 py-2 text-[11px] text-foreground/80">
+                <GitCompare className="h-3.5 w-3.5 text-[color:var(--soc-low)]" />
+                <span className="font-mono-data text-[10px] uppercase tracking-wider text-muted-foreground">
+                  Compare Mode
+                </span>
+                <span className="text-muted-foreground">
+                  Select two sessions below.{" "}
+                  <span className="font-mono-data text-[color:var(--soc-low)]">
+                    {selectedIds.length}/2
+                  </span>{" "}
+                  selected
+                  {selectedIds.length === 2 && " — ready to compare"}.
+                </span>
+              </div>
+            )}
             <SessionsTable
               sessions={sessions}
               loading={loading}
               onOpen={handleOpen}
+              compareMode={compareMode}
+              selectedIds={selectedIds}
+              onToggleSelect={handleToggleSelect}
             />
             {sessions.length > 0 && (
               <Pagination
@@ -1844,12 +2006,92 @@ export function HistoryView() {
             )}
           </div>
         )}
+
+        {/* Floating compare action bar */}
+        {compareMode && (
+          <div className="pointer-events-none sticky bottom-0 z-20 mt-auto flex justify-center px-3 pb-3">
+            <div
+              className="pointer-events-auto flex w-full max-w-2xl flex-wrap items-center gap-2 rounded-lg border border-border/60 bg-card/95 px-3 py-2 shadow-lg backdrop-blur-md"
+              style={{
+                boxShadow: "0 -4px 24px -4px rgba(0,0,0,0.4)",
+              }}
+            >
+              <div className="flex min-w-0 flex-1 items-center gap-2">
+                <GitCompare className="h-4 w-4 shrink-0 text-[color:var(--soc-low)]" />
+                <span className="font-mono-data text-[10px] uppercase tracking-wider text-muted-foreground">
+                  Selected:
+                </span>
+                <div className="flex min-w-0 flex-1 items-center gap-1.5">
+                  {selectedSessions.length === 0 ? (
+                    <span className="font-mono-data text-[10px] text-muted-foreground/70">
+                      No sessions selected
+                    </span>
+                  ) : (
+                    selectedSessions.map((s, idx) => (
+                      <div
+                        key={s.id}
+                        className="flex min-w-0 items-center gap-1 rounded-sm border px-1.5 py-0.5 font-mono-data text-[9px]"
+                        style={{
+                          color: idx === 0 ? "var(--soc-low)" : "var(--soc-medium)",
+                          borderColor: `color-mix(in oklch, ${idx === 0 ? "var(--soc-low)" : "var(--soc-medium)"} 40%, transparent)`,
+                          backgroundColor: `color-mix(in oklch, ${idx === 0 ? "var(--soc-low)" : "var(--soc-medium)"} 10%, transparent)`,
+                        }}
+                      >
+                        <span className="font-bold">{idx === 0 ? "A" : "B"}</span>
+                        <span className="truncate text-foreground/80" title={s.id}>
+                          {s.id.slice(0, 14)}…
+                        </span>
+                        <span className="text-muted-foreground">· {s.eventCount}e/{s.alertCount}a</span>
+                      </div>
+                    ))
+                  )}
+                </div>
+              </div>
+              <div className="flex shrink-0 items-center gap-1.5">
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  onClick={handleClearSelection}
+                  disabled={selectedIds.length === 0}
+                  className="h-7 gap-1 px-2 text-[10px] text-muted-foreground"
+                >
+                  <X className="h-3 w-3" />
+                  Clear
+                </Button>
+                <Button
+                  size="sm"
+                  variant="outline"
+                  onClick={handleExitCompare}
+                  className="h-7 gap-1 px-2 text-[10px]"
+                >
+                  Cancel
+                </Button>
+                <Button
+                  size="sm"
+                  onClick={handleOpenCompare}
+                  disabled={selectedIds.length !== 2}
+                  className="h-7 gap-1.5 text-[10px]"
+                >
+                  <GitCompare className="h-3 w-3" />
+                  Compare Selected ({selectedIds.length})
+                </Button>
+              </div>
+            </div>
+          </div>
+        )}
       </div>
 
       <DetailDialog
         session={selected}
         open={dialogOpen}
         onOpenChange={setDialogOpen}
+      />
+
+      <CompareSessionsDialog
+        sessionAId={selectedIds[0] ?? null}
+        sessionBId={selectedIds[1] ?? null}
+        open={compareDialogOpen}
+        onOpenChange={setCompareDialogOpen}
       />
     </div>
   );
