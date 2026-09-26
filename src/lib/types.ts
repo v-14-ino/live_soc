@@ -4,6 +4,15 @@
 
 export type Severity = "critical" | "high" | "medium" | "low" | "info";
 
+// ============================================================
+// PHASE 2 — Data Source Model
+//
+// Every event is tagged with its origin so the UI and pipeline
+// can distinguish real telemetry from demo/simulated data and
+// from initial-assessment results. Never mix silently.
+// ============================================================
+export type DataSource = "REAL" | "DEMO" | "ASSESSMENT";
+
 export type MonitorStatus =
   | "ready"
   | "initializing"
@@ -99,6 +108,19 @@ export interface SecurityEvent {
   message: string;
   isDemo: boolean;
   raw?: Record<string, unknown> | null;
+  // ---- PHASE 2: real-telemetry data source model (additive, all optional) ----
+  // dataSource: REAL | DEMO | ASSESSMENT. When null, inferred from isDemo
+  // for backward compatibility (isDemo=true => DEMO, else REAL).
+  dataSource?: DataSource | null;
+  // When LiveSOC received the event (ingestion time). Distinct from `timestamp`.
+  receivedAt?: string | null;
+  // Host/agent identity for real telemetry.
+  hostId?: string | null;
+  hostname?: string | null;
+  os?: string | null;
+  username?: string | null;
+  // Broader category: authentication | network | process | firewall | web | ...
+  eventCategory?: string | null;
 }
 
 export interface SecurityAlert {

@@ -137,11 +137,28 @@ model Event {
   rawJson       String?  // JSON blob of extra fields
   createdAt     DateTime @default(now())
 
+  // ---- Phase 2: real-telemetry data source model (additive, all optional) ----
+  // dataSource: REAL | DEMO | ASSESSMENT. When null, inferred from isDemo
+  // for backward compatibility (isDemo=true => DEMO, isDemo=false => REAL).
+  dataSource    String?  // REAL | DEMO | ASSESSMENT
+  // Ingestion timestamp (when the event reached LiveSOC), distinct from the
+  // event's own `timestamp` (when the source observed it).
+  receivedAt    DateTime?
+  // Host/agent identity for real telemetry (nullable for demo events).
+  hostId        String?
+  hostname      String?
+  os            String?
+  username      String?
+  // Broader category: authentication | network | process | firewall | web | ...
+  eventCategory String?
+
   alerts   Alert[]
 
   @@index([sessionId])
   @@index([severity])
   @@index([eventType])
+  @@index([dataSource])
+  @@index([hostId])
 }
 
 model Alert {
@@ -336,4 +353,101 @@ model WebhookDelivery {
 
   @@index([webhookId])
   @@index([calledAt])
+}
+
+// ============================================================
+// PHASE 3 — Raw Log Storage
+//
+// Preserves the ORIGINAL source evidence before normalization.
+// Every ingested raw payload creates a RawLog row; normalization
+// then produces a normalized Event (linked via normalizedEventId).
+// Raw evidence is NEVER modified during normalization.
+// ============================================================
+model RawLog {
+  id                String   @id @default(cuid())
+  // When the source observed the event (from the payload's timestamp field).
+  timestamp         DateTime @default(now())
+  // When LiveSOC received the raw log.
+  receivedAt        DateTime @default(now())
+  // Telemetry source type: linux_auth | syslog | journald | windows_event_log |
+  // firewall | network | web_log | process | demo | ...
+  sourceType        String
+  // REAL | DEMO | ASSESSMENT
+  dataSource        String   @default("REAL")
+  // Originating agent (if the log came from an agent).
+  agentId           String?
+  // Originating host identity.
+  hostId            String?
+  hostname          String?
+  // The unmodified original payload (JSON string). Capped at 64KB by the app.
+  rawPayload        String
+  // Which parser/normalizer handled this (e.g. "linux_auth_v1", "windows_security_v1").
+  parser            String?
+  // Link to the normalized Event row (set after normalization succeeds).
+  normalizedEventId String?
+  // Extra metadata (parser warnings, partial-parse flags, etc.).
+  metadata          String?
+  createdAt         DateTime @default(now())
+
+  @@index([sourceType])
+  @@index([dataSource])
+  @@index([agentId])
+  @@index([hostId])
+  @@index([receivedAt])
+}
+
+// ============================================================
+// PHASE 4 — Agent / Host / Heartbeat models
+//
+// Enables external telemetry agents to register, identify
+// themselves, and maintain a heartbeat. A missing heartbeat
+// can eventually produce an agent-health alert.
+// ============================================================
+model Agent {
+  id            String    @id @default(cuid())
+  // Stable external identifier (provided by the agent at registration).
+  agentId       String    @unique
+  name          String    @default("")
+  hostname      String?
+  os            String?
+  version       String?
+  ip            String?
+  // ONLINE | OFFLINE | DEGRADED
+  status        String    @default("OFFLINE")
+  lastHeartbeat DateTime?
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+
+  heartbeats Heartbeat[]
+
+  @@index([status])
+}
+
+model Host {
+  id         String    @id @default(cuid())
+  hostname   String
+  os         String?
+  ip         String?
+  // ONLINE | OFFLINE | UNKNOWN
+  status     String    @default("UNKNOWN")
+  lastSeen   DateTime?
+  createdAt  DateTime  @default(now())
+  updatedAt  DateTime  @updatedAt
+
+  @@unique([hostname, ip])
+  @@index([status])
+}
+
+model Heartbeat {
+  id        String   @id @default(cuid())
+  agentId   String
+  agent     Agent    @relation(fields: [agentId], references: [id], onDelete: Cascade)
+  timestamp DateTime @default(now())
+  // ONLINE | DEGRADED | OFFLINE
+  status    String   @default("ONLINE")
+  // Optional metadata: CPU%, mem%, queue depth, etc.
+  metadata  String?
+
+  @@index([agentId])
+  @@index([timestamp])
 }

@@ -164,6 +164,31 @@ export const api = {
       `/api/monitoring/${encodeURIComponent(sessionId)}/scenarios`,
     ),
 
+  getTelemetrySources: (sessionId: string) =>
+    http<{
+      sessionId: string;
+      sources: Array<{
+        name: string;
+        displayName: string;
+        sourceType: string;
+        status: string;
+        reason?: string;
+      }>;
+    }>(`/api/monitoring/${encodeURIComponent(sessionId)}/telemetry-sources`),
+
+  // ---- Ingestion (Phase 5) ----
+  ingestEvent: (payload: Record<string, unknown>) =>
+    http<{
+      ok: boolean;
+      eventId?: string;
+      dataSource: string;
+      parser: string;
+      warnings?: string[];
+    }>("/api/ingest", {
+      method: "POST",
+      body: JSON.stringify(payload),
+    }),
+
   getHistory: (params: { page?: number; pageSize?: number; status?: string; target?: string } = {}) => {
     const q = new URLSearchParams();
     if (params.page) q.set("page", String(params.page));

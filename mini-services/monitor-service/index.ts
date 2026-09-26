@@ -28,6 +28,7 @@ import type {
   MonitorStatus,
   WSMessage,
   WSClientCommand,
+  SecurityEvent,
 } from "@/lib/types";
 
 const PORT = 3003;
@@ -170,6 +171,65 @@ async function handleInternalRoute(
       }
       await sessionManager.stopSession(sessionId);
       sendJson(res, 200, { ok: true, sessionId });
+      return;
+    }
+
+    // ---- POST /internal/ingest (Phase 5: real telemetry ingestion) ----
+    if (pathname === "/internal/ingest" && method === "POST") {
+      const body = (await readJsonBody(req)) as {
+        sessionId?: string;
+        event?: SecurityEvent;
+        rawLog?: {
+          sourceType: string;
+          rawPayload: string;
+          parser?: string;
+          agentId?: string;
+          hostId?: string;
+          hostname?: string;
+          metadata?: string;
+        };
+      };
+      if (!body.sessionId || !body.event || !body.rawLog) {
+        sendJson(res, 400, { error: "Missing sessionId, event, or rawLog" });
+        return;
+      }
+      const result = await sessionManager.ingestEvent(
+        body.sessionId,
+        body.event,
+        body.rawLog,
+      );
+      if (!result.ok) {
+        sendJson(res, 409, { ok: false, error: result.error });
+        return;
+      }
+      sendJson(res, 200, { ok: true, eventId: result.eventId });
+      return;
+    }
+
+    // ---- POST /internal/heartbeat (Phase 4: agent heartbeat) ----
+    if (pathname === "/internal/heartbeat" && method === "POST") {
+      const body = (await readJsonBody(req)) as {
+        agentId?: string;
+        hostname?: string;
+        os?: string;
+        version?: string;
+        ip?: string;
+        status?: string;
+        metadata?: string;
+      };
+      if (!body.agentId) {
+        sendJson(res, 400, { error: "Missing 'agentId' in body" });
+        return;
+      }
+      await sessionManager.recordHeartbeat(body.agentId, {
+        hostname: body.hostname,
+        os: body.os,
+        version: body.version,
+        ip: body.ip,
+        status: body.status,
+        metadata: body.metadata,
+      });
+      sendJson(res, 200, { ok: true, agentId: body.agentId });
       return;
     }
 
@@ -320,6 +380,15 @@ async function handleInternalRoute(
         defense: Array.from(
           active.correlationState.defenseScenarios.values(),
         ),
+      });
+      return;
+    }
+
+    // ---- GET /internal/telemetry-sources/:sessionId (Phase 9) ----
+    if (sub === "telemetry-sources" && method === "GET") {
+      sendJson(res, 200, {
+        sessionId,
+        sources: sessionManager.getTelemetrySources(sessionId),
       });
       return;
     }

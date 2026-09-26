@@ -51,6 +51,7 @@ import { ThreatMapPanel } from "@/components/soc/threat-map-panel";
 import { RiskGaugePanel } from "@/components/soc/risk-gauge-panel";
 import { MitreMatrixPanel } from "@/components/soc/mitre-matrix-panel";
 import { SourceIpReputationPanel } from "@/components/soc/source-ip-reputation-panel";
+import { TelemetrySourcesPanel } from "@/components/soc/telemetry-sources-panel";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import {
@@ -941,9 +942,19 @@ function LiveSecurityLog() {
                     </td>
                     <td className="max-w-[280px] px-2 py-1.5">
                       <div className="flex items-center gap-1.5">
-                        {e.isDemo && (
+                        {(e.dataSource ?? (e.isDemo ? "DEMO" : "REAL")) === "DEMO" && (
                           <span className="shrink-0 rounded-sm border border-[color:var(--soc-medium)]/40 bg-[color:var(--soc-medium)]/10 px-1 py-0.5 font-mono-data text-[8px] font-bold uppercase text-[color:var(--soc-medium)]">
                             Demo
+                          </span>
+                        )}
+                        {(e.dataSource ?? (e.isDemo ? "DEMO" : "REAL")) === "REAL" && (
+                          <span className="shrink-0 rounded-sm border border-[color:var(--soc-success)]/40 bg-[color:var(--soc-success)]/10 px-1 py-0.5 font-mono-data text-[8px] font-bold uppercase text-[color:var(--soc-success)]">
+                            Real
+                          </span>
+                        )}
+                        {e.dataSource === "ASSESSMENT" && (
+                          <span className="shrink-0 rounded-sm border border-[color:var(--soc-low)]/40 bg-[color:var(--soc-low)]/10 px-1 py-0.5 font-mono-data text-[8px] font-bold uppercase text-[color:var(--soc-low)]">
+                            Assess
                           </span>
                         )}
                         <span
@@ -2009,10 +2020,11 @@ export function LiveMonitorView() {
             <NetworkActivityPanel />
             <ThreatMapSection />
           </div>
-          <div className="grid grid-cols-1 gap-3 lg:grid-cols-2 xl:grid-cols-3">
+          <div className="grid grid-cols-1 gap-3 lg:grid-cols-2 xl:grid-cols-4">
             <RiskGaugeSection />
             <MitreMatrixSection />
             <SourceIpReputationSection />
+            <TelemetrySourcesPanel />
           </div>
         </div>
       </div>

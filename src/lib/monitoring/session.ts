@@ -50,6 +50,17 @@ const RECENT_EVENTS_CAP = 500;
 const RECENT_ALERTS_CAP = 200;
 const SESSION_COUNTER_FLUSH_EVERY = 10;
 
+// ============================================================
+// PHASE 9 — Telemetry source status (for live-mode source reporting)
+// ============================================================
+export interface TelemetrySourceStatus {
+  name: string;
+  displayName: string;
+  sourceType: string;
+  status: "CONNECTED" | "DISCONNECTED" | "UNAVAILABLE" | "ERROR" | "NOT_CONFIGURED";
+  reason?: string;
+}
+
 export interface ActiveSession {
   session: MonitoringSession;
   assessment: AssessmentResult;
@@ -59,6 +70,7 @@ export interface ActiveSession {
   customRules: CustomRule[];
   customRuleCtx: CustomRuleContext;
   webhooks: import("@/lib/types").WebhookConfig[];
+  telemetrySources: TelemetrySourceStatus[];
   subscribers: Set<(msg: WSMessage) => void>;
   eventCounter: { value: number };
   alertCounter: { value: number };
@@ -184,12 +196,20 @@ async function processEvent(active: ActiveSession, event: SecurityEvent): Promis
         message: event.message,
         isDemo: event.isDemo,
         rawJson: event.raw ? JSON.stringify(event.raw) : null,
+        // Phase 2: real-telemetry data source fields (all nullable)
+        dataSource: event.dataSource ?? (event.isDemo ? "DEMO" : "REAL"),
+        receivedAt: event.receivedAt ? new Date(event.receivedAt) : new Date(),
+        hostId: event.hostId ?? null,
+        hostname: event.hostname ?? null,
+        os: event.os ?? null,
+        username: event.username ?? null,
+        eventCategory: event.eventCategory ?? null,
       },
     });
     dbEventId = dbEvent.id;
     event.id = dbEvent.id;
   } catch (err) {
-     
+
     console.error("[session] event persist failed:", err);
   }
 
@@ -590,20 +610,106 @@ export const sessionManager = {
       console.error("[session] failed to load webhooks:", err);
     }
 
-    // 10. telemetry generator
-    const telemetry = createTelemetryGenerator({
-      targetAddress,
-      services: assessment.services,
-      intervalMs: 1500,
-      enabledCollectors: {
-        network: true,
-        systemLogs: true,
-        webLogs: true,
-        firewall: true,
-        ids: false,
-      },
-      sessionId: dbSession.id,
-    });
+    // 10. telemetry generator — mode-aware (Phase 8)
+    //    DEMO mode: use the existing demo generator (unchanged behavior).
+    //    LIVE mode: do NOT use the demo generator. Instead, start available
+    //    real telemetry adapters. If no adapters are available, the session
+    //    starts but shows "NO TELEMETRY" — events can still arrive via
+    //    POST /api/ingest. Never silently fall back to demo in live mode.
+    const telemetrySources: TelemetrySourceStatus[] = [];
+    let telemetry: TelemetryGenerator;
+    const adapterHandles: import("@/lib/monitoring/adapters/base").AdapterHandle[] = [];
+
+    if (mode === "live") {
+      // LIVE mode: attempt to start real adapters
+      const { ADAPTER_LIST } = await import("@/lib/monitoring/adapters");
+      for (const adapter of ADAPTER_LIST) {
+        try {
+          const status = await adapter.checkAvailability();
+          if (status.available) {
+            const handle = await adapter.start(
+              { targetAddress, intervalMs: 2000 },
+              (e: SecurityEvent) => {
+                // Tag real-adapter events with dataSource=REAL
+                e.dataSource = "REAL";
+                e.isDemo = false;
+                e.receivedAt = new Date().toISOString();
+                active.processingChain = active.processingChain
+                  .then(() => processEvent(active, e))
+                  .catch((err) => {
+                    console.error("[session] adapter processEvent error:", err);
+                  });
+              },
+            );
+            adapterHandles.push(handle);
+            telemetrySources.push({
+              name: adapter.name,
+              displayName: adapter.displayName,
+              sourceType: String(adapter.sourceType),
+              status: "CONNECTED",
+            });
+            await auditLog("info", "session", `Started real adapter: ${adapter.name}`, {
+              sessionId: dbSession.id,
+              version: status.version,
+            });
+          } else {
+            telemetrySources.push({
+              name: adapter.name,
+              displayName: adapter.displayName,
+              sourceType: String(adapter.sourceType),
+              status: "UNAVAILABLE",
+              reason: status.reason,
+            });
+          }
+        } catch (err) {
+          telemetrySources.push({
+            name: adapter.name,
+            displayName: adapter.displayName,
+            sourceType: String(adapter.sourceType),
+            status: "ERROR",
+            reason: err instanceof Error ? err.message : "Unknown error",
+          });
+        }
+      }
+
+      // Create a no-op telemetry generator for live mode (adapters feed directly)
+      telemetry = {
+        start: () => { /* adapters already started above */ },
+        stop: () => {
+          for (const h of adapterHandles) {
+            try { h.stop(); } catch { /* ignore */ }
+          }
+        },
+        onEvent: () => { /* adapters call processEvent directly */ },
+      };
+
+      const connectedCount = telemetrySources.filter((s) => s.status === "CONNECTED").length;
+      await auditLog("info", "session", `Live mode: ${connectedCount}/${telemetrySources.length} adapters connected`, {
+        sessionId: dbSession.id,
+        sources: telemetrySources.map((s) => ({ name: s.name, status: s.status })),
+      });
+    } else {
+      // DEMO mode: use the existing demo generator (unchanged)
+      telemetry = createTelemetryGenerator({
+        targetAddress,
+        services: assessment.services,
+        intervalMs: 1500,
+        enabledCollectors: {
+          network: true,
+          systemLogs: true,
+          webLogs: true,
+          firewall: true,
+          ids: false,
+        },
+        sessionId: dbSession.id,
+      });
+      telemetrySources.push({
+        name: "demo",
+        displayName: "Demo Telemetry Generator",
+        sourceType: "demo",
+        status: "CONNECTED",
+      });
+    }
 
     // 11. build active session
     const active: ActiveSession = {
@@ -615,6 +721,7 @@ export const sessionManager = {
       customRules,
       customRuleCtx,
       webhooks,
+      telemetrySources,
       subscribers: new Set(),
       eventCounter: { value: 0 },
       alertCounter: { value: 0 },
@@ -630,11 +737,12 @@ export const sessionManager = {
     };
 
     // 12. wire telemetry onEvent (serialized via processing chain)
+    //     (Only used in DEMO mode; live-mode adapters feed directly above)
     telemetry.onEvent((event) => {
       active.processingChain = active.processingChain
         .then(() => processEvent(active, event))
         .catch((err) => {
-           
+
           console.error("[session] processEvent error:", err);
         });
     });
@@ -643,10 +751,12 @@ export const sessionManager = {
     activeSessions.set(dbSession.id, active);
     telemetry.start();
 
-    await auditLog("info", "session", `Monitoring session ${dbSession.id} active`, {
+    await auditLog("info", "session", `Monitoring session ${dbSession.id} active (${mode} mode)`, {
       sessionId: dbSession.id,
       target: targetAddress,
       openPorts: assessment.ports.length,
+      mode,
+      telemetrySources: telemetrySources.map((s) => ({ name: s.name, status: s.status })),
     });
 
     return { session: dbSession, assessment };
@@ -781,6 +891,13 @@ export const sessionManager = {
     return Array.from(activeSessions.values());
   },
 
+  // PHASE 9 — telemetry source status for a session
+  getTelemetrySources(sessionId: string): TelemetrySourceStatus[] {
+    const active = activeSessions.get(sessionId);
+    if (!active) return [];
+    return active.telemetrySources;
+  },
+
   broadcast(sessionId: string, msg: WSMessage): void {
     const active = activeSessions.get(sessionId);
     if (active) broadcastLocal(active, msg);
@@ -797,5 +914,162 @@ export const sessionManager = {
     const active = activeSessions.get(sessionId);
     if (!active) return;
     active.subscribers.delete(cb);
+  },
+
+  // ============================================================
+  // PHASE 5/7 — External ingestion entry point
+  //
+  // Accepts a normalized SecurityEvent (from POST /api/ingest via
+  // the normalizer), persists a RawLog, stamps it with dataSource=REAL
+  // + receivedAt, and feeds it into the EXISTING processEvent()
+  // pipeline. This is the ONLY way external real telemetry enters
+  // the system. It reuses the same detection/correlation/broadcast
+  // logic as demo events — no second pipeline.
+  // ============================================================
+  async ingestEvent(
+    sessionId: string,
+    event: SecurityEvent,
+    rawLog: {
+      sourceType: string;
+      rawPayload: string;
+      parser?: string;
+      agentId?: string;
+      hostId?: string;
+      hostname?: string;
+      metadata?: string;
+    },
+  ): Promise<{ ok: boolean; eventId?: string; error?: string }> {
+    const active = activeSessions.get(sessionId);
+    if (!active) {
+      return { ok: false, error: "Session not active" };
+    }
+
+    // Generate a globally-unique eventId for the ingested event
+    active.eventCounter.value += 1;
+    const seq = String(active.eventCounter.value).padStart(5, "0");
+    const eventId = active.idPrefix
+      ? `EVT-${active.idPrefix}-${seq}`
+      : `EVT-${seq}`;
+    event.eventId = eventId;
+    event.id = eventId;
+    event.sessionId = active.session.id;
+    // Force REAL data source for ingested events
+    event.dataSource = "REAL";
+    event.isDemo = false;
+    if (!event.receivedAt) {
+      event.receivedAt = new Date().toISOString();
+    }
+
+    // Persist RawLog (preserve original evidence BEFORE normalization)
+    let rawLogId: string | undefined;
+    try {
+      const rl = await db.rawLog.create({
+        data: {
+          timestamp: new Date(event.timestamp),
+          receivedAt: new Date(event.receivedAt),
+          sourceType: rawLog.sourceType,
+          dataSource: "REAL",
+          agentId: rawLog.agentId ?? null,
+          hostId: rawLog.hostId ?? null,
+          hostname: rawLog.hostname ?? null,
+          rawPayload: rawLog.rawPayload.slice(0, 65536),
+          parser: rawLog.parser ?? null,
+          metadata: rawLog.metadata ?? null,
+        },
+      });
+      rawLogId = rl.id;
+    } catch (err) {
+      console.error("[session] rawlog persist failed:", err);
+    }
+
+    // Feed into the EXISTING processEvent pipeline (serialized via processingChain)
+    active.processingChain = active.processingChain
+      .then(async () => {
+        await processEvent(active, event);
+        // Link RawLog → normalized Event after processEvent persists the event
+        if (rawLogId && event.id) {
+          try {
+            await db.rawLog.update({
+              where: { id: rawLogId },
+              data: { normalizedEventId: event.id },
+            });
+          } catch {
+            // non-fatal
+          }
+        }
+      })
+      .catch((err) => {
+        console.error("[session] ingestEvent processEvent error:", err);
+      });
+
+    return { ok: true, eventId };
+  },
+
+  // ============================================================
+  // PHASE 4 — Agent heartbeat
+  //
+  // Upserts an Agent row + creates a Heartbeat row. Called by
+  // POST /api/ingest when an agentId is present, or by a dedicated
+  // heartbeat endpoint. Updates agent status to ONLINE.
+  // ============================================================
+  async recordHeartbeat(agentId: string, info: {
+    hostname?: string;
+    os?: string;
+    version?: string;
+    ip?: string;
+    status?: string;
+    metadata?: string;
+  }): Promise<void> {
+    try {
+      const agent = await db.agent.upsert({
+        where: { agentId },
+        create: {
+          agentId,
+          hostname: info.hostname ?? null,
+          os: info.os ?? null,
+          version: info.version ?? null,
+          ip: info.ip ?? null,
+          status: info.status ?? "ONLINE",
+          lastHeartbeat: new Date(),
+        },
+        update: {
+          hostname: info.hostname ?? undefined,
+          os: info.os ?? undefined,
+          version: info.version ?? undefined,
+          ip: info.ip ?? undefined,
+          status: info.status ?? "ONLINE",
+          lastHeartbeat: new Date(),
+        },
+      });
+
+      await db.heartbeat.create({
+        data: {
+          agentId: agent.id,
+          status: info.status ?? "ONLINE",
+          metadata: info.metadata ?? null,
+        },
+      });
+
+      // Upsert Host
+      if (info.hostname) {
+        await db.host.upsert({
+          where: { hostname_ip: { hostname: info.hostname, ip: info.ip ?? "" } },
+          create: {
+            hostname: info.hostname,
+            os: info.os ?? null,
+            ip: info.ip ?? null,
+            status: "ONLINE",
+            lastSeen: new Date(),
+          },
+          update: {
+            os: info.os ?? undefined,
+            status: "ONLINE",
+            lastSeen: new Date(),
+          },
+        }).catch(() => { /* unique constraint may not match — ignore */ });
+      }
+    } catch (err) {
+      console.error("[session] heartbeat record failed:", err);
+    }
   },
 };

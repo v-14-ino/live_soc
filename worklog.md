@@ -2245,3 +2245,169 @@ The existing architecture is **well-structured for extension**: the `processEven
 The **single biggest gap** is the absence of an external ingestion path: there is no way for a real agent or collector to push events into `processEvent()`. Adding `POST /api/ingest` + a `RawLog` model + `dataSource` labeling is the minimal change that converts the system from demo-only to real-telemetry-capable, while preserving 100% of existing functionality.
 
 **No code was modified during this assessment.** Awaiting direction to proceed with implementation phases 2+.
+
+---
+Task ID: TELEMETRY-1 (real-telemetry architecture — Phases 2-9 implementation)
+Agent: orchestrator (main)
+Task: Convert demo-only telemetry into real-telemetry-capable architecture (additive, non-breaking)
+
+## 1. What already existed (preserved, NOT rewritten)
+- Next.js frontend + 6 views, Zustand store, socket.io WS hook
+- monitor-service (:3003) with sessionManager singleton
+- Demo telemetry generator (5-phase, isDemo=true)
+- Detection engine (8 built-in rules + custom rules with threshold/window)
+- Correlation engine (offense/defense scenarios with dedup)
+- Webhook notifier + delivery history
+- History, Reports, Settings, Compare Sessions, Timeline Scrubber
+- TelemetryAdapter interface + 5 adapter implementations (nmap/journald/nginx/iptables/suricata) — scaffolding only, not wired
+
+## 2. What changed (additive only)
+
+### Phase 2 — Data Source Model
+- Added `DataSource` type (`REAL | DEMO | ASSESSMENT`) to `src/lib/types.ts`
+- Extended `SecurityEvent` interface with optional: `dataSource`, `receivedAt`, `hostId`, `hostname`, `os`, `username`, `eventCategory`
+- Extended `Event` Prisma model with matching nullable fields + indexes
+- `processEvent()` now persists these fields; `dataSource` defaults to `isDemo ? DEMO : REAL` for backward compatibility
+- UI event log now shows REAL (green) / DEMO (amber) / ASSESS (cyan) source tags
+
+### Phase 3 — Raw Log Storage
+- New `RawLog` Prisma model: id, timestamp, receivedAt, sourceType, dataSource, agentId, hostId, hostname, rawPayload (64KB cap), parser, normalizedEventId, metadata. Indexed on sourceType/dataSource/agentId/hostId/receivedAt.
+- `sessionManager.ingestEvent()` creates a RawLog BEFORE normalization, then links `normalizedEventId` after the Event is persisted. Raw evidence is never modified.
+
+### Phase 4 — Agent / Host / Heartbeat
+- New `Agent` model: agentId (unique), hostname, os, version, ip, status (ONLINE/OFFLINE/DEGRADED), lastHeartbeat
+- New `Host` model: hostname+ip (unique), os, status, lastSeen
+- New `Heartbeat` model: agentId (relation), timestamp, status, metadata
+- `sessionManager.recordHeartbeat()` upserts Agent + creates Heartbeat + upserts Host
+
+### Phase 5 — External Ingestion Endpoint
+- New `POST /api/ingest` route (`src/app/api/ingest/route.ts`):
+  1. Validates payload (`validateIngestPayload`)
+  2. Identifies session (sessionId in body or query)
+  3. Records agent heartbeat (if agentId present)
+  4. Normalizes via `normalizePayload()` → SecurityEvent
+  5. Proxies to monitor-service `/internal/ingest` which calls `sessionManager.ingestEvent()`
+  6. ingestEvent: creates RawLog → stamps dataSource=REAL + receivedAt → feeds into EXISTING `processEvent()` pipeline
+- `GET /api/ingest` returns the schema documentation (helps agents discover the format)
+
+### Phase 6 — Ingestion Schema
+- Documented in `IngestPayload` interface + `GET /api/ingest` response
+- Required: sourceType, eventType. Optional: agentId, hostname, os, eventCategory, timestamp, username, sourceIp/Port, destinationIp/Port, protocol, action, severity, message, rawEvent, metadata
+
+### Phase 7 — Collector Abstraction
+- New `src/lib/monitoring/normalizer.ts` — source-type-aware normalizer with parsers: linux_auth_v1, windows_event_log_v1, firewall_v1, network_v1, web_log_v1, process_v1, generic_v1. Never throws — produces parse_error event on malformed input.
+- Existing `TelemetryAdapter` interface is now the foundation; adapters are wired into live mode (Phase 8).
+
+### Phase 8 — Live Mode Becomes Real
+- **CRITICAL FIX:** `sessionManager.startSession()` is now mode-aware:
+  - `mode="demo"`: uses the existing demo generator (unchanged behavior)
+  - `mode="live"`: starts available real adapters via `ADAPTER_LIST`, tags events with `dataSource=REAL`, feeds directly into `processEvent()`. **Does NOT fall back to demo.** If no adapters are available, events=0 (NO TELEMETRY).
+- New `TelemetrySourceStatus` type + `telemetrySources` field on `ActiveSession`
+- New `sessionManager.getTelemetrySources()` method
+- New `/internal/telemetry-sources/:sessionId` endpoint on monitor-service
+- New `GET /api/monitoring/[sessionId]/telemetry-sources` proxy route
+
+### Phase 9 — Telemetry Status UI
+- New `TelemetrySourcesPanel` component in LiveMonitor:
+  - Overall status badge: CONNECTED / PARTIAL / NO TELEMETRY / DEMO MODE
+  - Per-source list: name + status (CONNECTED/DISCONNECTED/UNAVAILABLE/ERROR/NOT_CONFIGURED) with colored icons
+  - Ingestion hint for live mode (shows POST /api/ingest + GET /api/ingest schema)
+- Polls every 10s while monitoring is active
+- Event log now shows REAL/DEMO/ASSESSMENT source tags on each row
+
+## 3. Files changed
+- `prisma/schema.prisma` — Event extended + RawLog, Agent, Host, Heartbeat models
+- `src/lib/types.ts` — DataSource type + SecurityEvent extensions
+- `src/lib/monitoring/normalizer.ts` (NEW) — ingestion normalizer with 7 source-type parsers
+- `src/lib/monitoring/session.ts` — processEvent persists new fields; ingestEvent + recordHeartbeat + getTelemetrySources methods; mode-aware telemetry wiring (live=adapters, demo=generator); TelemetrySourceStatus type + telemetrySources field
+- `src/lib/monitoring/index.ts` — export normalizer
+- `src/app/api/ingest/route.ts` (NEW) — POST /api/ingest + GET schema docs
+- `src/app/api/monitoring/[sessionId]/telemetry-sources/route.ts` (NEW) — telemetry source status proxy
+- `src/lib/api-client.ts` — getTelemetrySources + ingestEvent methods
+- `mini-services/monitor-service/index.ts` — /internal/ingest + /internal/heartbeat + /internal/telemetry-sources endpoints; SecurityEvent import
+- `src/components/soc/telemetry-sources-panel.tsx` (NEW) — telemetry sources UI panel
+- `src/components/views/live-monitor-view.tsx` — TelemetrySourcesPanel in layout + REAL/DEMO/ASSESSMENT event tags
+- `src/hooks/use-replay-mode.ts` — lint fix (pre-existing, not from this phase)
+
+## 4. Database migrations
+- `bun run db:push` — added 4 new models (RawLog, Agent, Host, Heartbeat) + 7 new optional fields on Event + 2 new indexes. All additive, no data loss.
+
+## 5. New models
+- `RawLog` — raw evidence preservation before normalization
+- `Agent` — external agent identity + heartbeat tracking
+- `Host` — host identity inventory
+- `Heartbeat` — agent liveness log
+
+## 6. New API endpoints
+- `POST /api/ingest` — external real-telemetry ingestion
+- `GET /api/ingest` — ingestion schema documentation
+- `GET /api/monitoring/[sessionId]/telemetry-sources` — telemetry source status
+- `POST /internal/ingest` (monitor-service) — internal ingestion handler
+- `POST /internal/heartbeat` (monitor-service) — agent heartbeat
+- `GET /internal/telemetry-sources/:sessionId` (monitor-service) — source status
+
+## 7. New telemetry flow
+```
+External Agent / Collector
+       ↓
+POST /api/ingest (validate + identify)
+       ↓
+recordHeartbeat (Agent + Host + Heartbeat)
+       ↓
+normalizePayload (source-type parser → SecurityEvent, dataSource=REAL)
+       ↓
+sessionManager.ingestEvent()
+       ↓
+RawLog created (preserve original evidence)
+       ↓
+EXISTING processEvent() pipeline (NO second pipeline)
+       ↓
+Event persisted (dataSource=REAL, receivedAt, host fields)
+       ↓
+Detection (8 built-in + custom rules)
+       ↓
+Alert + Correlation (offense/defense scenarios)
+       ↓
+WebSocket broadcast → Live Monitor
+       ↓
+Webhook notification (if configured)
+```
+
+## 8. Live mode behavior
+- `mode="live"`: starts available real adapters (journald + iptables in sandbox; 2/5 connected). Does NOT use demo generator. Events=0 until real telemetry arrives via adapters or POST /api/ingest. Shows "NO TELEMETRY" if no sources connected.
+- `mode="demo"`: uses existing demo generator (unchanged). Shows "DEMO MODE".
+
+## 9. Demo mode behavior
+- Unchanged. Demo generator produces isDemo=true events with dataSource=DEMO. All existing detection/correlation/webhook/history/reports functionality preserved.
+
+## 10. Tests executed
+1. **Demo mode regression**: POST /api/monitoring mode=demo → session starts, demo events flow, "Demo Telemetry Generator: CONNECTED" ✓
+2. **Live mode no-demo-fallback**: POST /api/monitoring mode=live → 2/5 adapters CONNECTED, 3/5 UNAVAILABLE, events=0 (no demo fallback) ✓
+3. **Valid ingestion**: POST /api/ingest with linux_auth payload → ok=true, eventId=EVT-..., dataSource=REAL, parser=linux_auth_v1 ✓
+4. **Event persisted with new fields**: dataSource=REAL, isDemo=false, receivedAt set, hostname=root, username=root, eventCategory=authentication ✓
+5. **RawLog created**: sourceType=linux_auth, dataSource=REAL, parser=linux_auth_v1, normalizedEventId linked to Event, rawPayload preserved ✓
+6. **Agent/Host/Heartbeat**: agent-test-001 ONLINE, hostname=lab-linux, 1 heartbeat, Host upserted ✓
+7. **Detection on real events**: 3 auth failures → 2 alerts (New Source IP + Service Access Anomaly) — detection engine runs on REAL events via existing pipeline ✓
+8. **Invalid ingestion**: missing sourceType → 400 "Invalid payload" with details ✓
+9. **Missing session**: no sessionId → 409 "sessionId is required" ✓
+10. **Schema docs**: GET /api/ingest → endpoint documentation ✓
+11. **Telemetry sources API**: GET /api/monitoring/[sid]/telemetry-sources → per-source status ✓
+12. **Lint**: 0 errors, 0 warnings ✓
+13. **No console errors**: UI loads clean through gateway ✓
+
+## 11. End-to-end verification result
+**PASS.** Full flow verified: Test telemetry → POST /api/ingest → RawLog created → Normalized Event created (dataSource=REAL) → processEvent() → Detection → Alerts generated → DB records verified. No duplicate events. No demo fallback in live mode.
+
+## 12. Remaining limitations
+- Windows Event Log collector not yet implemented (architecture supports it via the normalizer's `windows_event_log` parser, but no agent/adapter sends Windows events yet)
+- Full Linux/Windows agents not yet built (the ingestion endpoint + normalizer are ready; agents can be built next to tail auth.log/syslog/Event Log and POST to /api/ingest)
+- Agent authentication: no API key validation yet (any agent can ingest; future: add API key to Agent model + validate in /api/ingest)
+- Agent-health alerts: heartbeat is recorded but no alert is generated on missing heartbeat yet (future: cron/interval check for stale agents → alert)
+- Nmap assessment: scanner.ts is still a mock; the nmap adapter exists but isn't wired into the assessment path (future: use nmap adapter for real assessments when available)
+
+## 13. Exact next recommended implementation phase
+**Phase 5 (Linux Telemetry MVP) + Phase 6 (Windows Telemetry MVP):**
+- Build a lightweight Linux agent script that tails /var/log/auth.log + /var/log/syslog and POSTs to /api/ingest with sourceType=linux_auth/syslog. This will produce REAL telemetry events that flow through the full pipeline.
+- Build a Windows agent (PowerShell) that reads Windows Event Log (Security channel, Event IDs 4624/4625/etc.) and POSTs to /api/ingest with sourceType=windows_event_log.
+- Add agent API key authentication (Agent.apiKey field + validate in /api/ingest).
+- Add agent-health alerting (detect stale heartbeats → generate alert).

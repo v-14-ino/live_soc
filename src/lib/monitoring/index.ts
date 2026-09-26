@@ -16,3 +16,4 @@ export * from "./stats";
 export * from "./audit";
 export * from "./session";
 export * from "./report";
+export * from "./normalizer";

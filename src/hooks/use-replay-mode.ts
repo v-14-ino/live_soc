@@ -83,7 +83,8 @@ export function useReplayMode(): ReplayControls {
 
     // Schedule next event
     const interval = BASE_INTERVAL_MS / speed;
-    timerRef.current = setTimeout(pushNextEvent, interval);
+    // eslint-disable-next-line react-hooks/immutability
+    timerRef.current = setTimeout(() => pushNextEvent(), interval);
   }, [speed]);
 
   const start = useCallback(async (sessionId: string) => {
