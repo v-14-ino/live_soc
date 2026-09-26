@@ -11,6 +11,8 @@ import type {
   MonitoringSessionInfo,
   ReportInfo,
   AppSettings,
+  CustomRule,
+  CustomRuleInput,
 } from "@/lib/types";
 import type { AdapterConfig, AdapterInfo } from "@/lib/monitoring/adapters";
 
@@ -220,5 +222,26 @@ export const api = {
     http<{ valid: boolean; issues: string[]; name: string }>("/api/adapters", {
       method: "POST",
       body: JSON.stringify({ name, config }),
+    }),
+
+  // ---- Custom Detection Rules ----
+  getCustomRules: () =>
+    http<{ rules: CustomRule[]; total: number }>("/api/rules"),
+
+  createCustomRule: (input: CustomRuleInput) =>
+    http<{ rule: CustomRule }>("/api/rules", {
+      method: "POST",
+      body: JSON.stringify(input),
+    }),
+
+  updateCustomRule: (ruleId: string, patch: Partial<CustomRuleInput>) =>
+    http<{ rule: CustomRule }>(`/api/rules/${encodeURIComponent(ruleId)}`, {
+      method: "PATCH",
+      body: JSON.stringify(patch),
+    }),
+
+  deleteCustomRule: (ruleId: string) =>
+    http<{ ok: boolean; ruleId: string }>(`/api/rules/${encodeURIComponent(ruleId)}`, {
+      method: "DELETE",
     }),
 };

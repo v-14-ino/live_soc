@@ -258,3 +258,29 @@ model AuditLog {
   message   String
   meta      String?  // JSON
 }
+
+// ============================================================
+// Custom Detection Rules (user-defined)
+// ============================================================
+model CustomRule {
+  id          String   @id @default(cuid())
+  ruleId      String   @unique // CSTM-NNNN
+  name        String
+  description String   @default("")
+  severity    String   @default("medium") // critical | high | medium | low | info
+  enabled     Boolean  @default(true)
+  // Conditions stored as JSON: [{ field, operator, value }]
+  // field: sourceIp | destPort | protocol | eventType | severity | message
+  // operator: equals | contains | matches | greaterThan | lessThan | in
+  // value: string | number | array
+  conditions  String   // JSON array of conditions (AND logic)
+  // Threshold: fire when N matching events within windowMs
+  threshold   Int      @default(1)
+  windowMs    Int      @default(60000)
+  confidence  Int      @default(60)
+  recommendedAction String @default("")
+  firedCount   Int      @default(0)
+  lastFired    DateTime?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+}

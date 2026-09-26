@@ -13,6 +13,7 @@ import {
   Command as CommandIcon,
   BookOpen,
   Keyboard,
+  FlaskConical,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useAppStore } from "@/lib/store";
@@ -23,6 +24,7 @@ import { StatusDot } from "@/components/soc/status-dot";
 import { CommandPalette } from "@/components/soc/command-palette";
 import { DetectionRulesDialog } from "@/components/soc/detection-rules-dialog";
 import { KeyboardShortcutsDialog } from "@/components/soc/keyboard-shortcuts-dialog";
+import { CustomRulesManager } from "@/components/soc/custom-rules-manager";
 import { LiveMonitorView } from "@/components/views/live-monitor-view";
 import { OffenseView } from "@/components/views/offense-view";
 import { DefenseView } from "@/components/views/defense-view";
@@ -56,6 +58,7 @@ export default function Home() {
   const connected = useAppStore((s) => s.connected);
   const mode = useAppStore((s) => s.mode);
   const [rulesOpen, setRulesOpen] = useState(false);
+  const [customRulesOpen, setCustomRulesOpen] = useState(false);
 
   // Connect websocket whenever there's an active session
   useMonitorWs({ sessionId, enabled: !!sessionId });
@@ -323,10 +326,18 @@ export default function Home() {
             <button
               onClick={() => setRulesOpen(true)}
               className="flex items-center gap-1.5 rounded-md border border-border/60 bg-card/40 px-2 py-1 font-mono-data text-[10px] uppercase tracking-wider text-muted-foreground transition-colors hover:bg-card/60 hover:text-foreground"
-              title="View detection rules reference"
+              title="View built-in detection rules reference"
             >
               <BookOpen className="h-3 w-3" />
-              <span className="hidden sm:inline">Rules</span>
+              <span className="hidden sm:inline">Built-in Rules</span>
+            </button>
+            <button
+              onClick={() => setCustomRulesOpen(true)}
+              className="flex items-center gap-1.5 rounded-md border border-[color:var(--soc-medium)]/40 bg-[color:var(--soc-medium)]/10 px-2 py-1 font-mono-data text-[10px] uppercase tracking-wider text-[color:var(--soc-medium)] transition-colors hover:bg-[color:var(--soc-medium)]/20"
+              title="Create and manage custom detection rules"
+            >
+              <FlaskConical className="h-3 w-3" />
+              <span className="hidden sm:inline">Custom Rules</span>
             </button>
             <button
               onClick={() => setShowHelp(true)}
@@ -377,6 +388,7 @@ export default function Home() {
       <CommandPalette onOpenRules={() => setRulesOpen(true)} />
       <DetectionRulesDialog open={rulesOpen} onOpenChange={setRulesOpen} />
       <KeyboardShortcutsDialog open={showHelp} onOpenChange={setShowHelp} />
+      <CustomRulesManager open={customRulesOpen} onOpenChange={setCustomRulesOpen} />
     </div>
   );
 }

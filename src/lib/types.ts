@@ -131,6 +131,56 @@ export interface DetectionRule {
 }
 
 // ============================================================
+// Custom Detection Rules (user-defined)
+// ============================================================
+export type RuleField =
+  | "sourceIp"
+  | "destPort"
+  | "protocol"
+  | "eventType"
+  | "severity"
+  | "message"
+  | "sourceCollector";
+
+export type RuleOperator = "equals" | "contains" | "matches" | "greaterThan" | "lessThan" | "in";
+
+export interface RuleCondition {
+  field: RuleField;
+  operator: RuleOperator;
+  value: string | number | string[];
+}
+
+export interface CustomRule {
+  id: string;
+  ruleId: string; // CSTM-NNNN
+  name: string;
+  description: string;
+  severity: Severity;
+  enabled: boolean;
+  conditions: RuleCondition[];
+  threshold: number; // fire when N matching events within windowMs
+  windowMs: number;
+  confidence: number;
+  recommendedAction: string;
+  firedCount: number;
+  lastFired?: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface CustomRuleInput {
+  name: string;
+  description?: string;
+  severity?: Severity;
+  enabled?: boolean;
+  conditions: RuleCondition[];
+  threshold?: number;
+  windowMs?: number;
+  confidence?: number;
+  recommendedAction?: string;
+}
+
+// ============================================================
 // Scenarios
 // ============================================================
 export interface OffenseScenario {
