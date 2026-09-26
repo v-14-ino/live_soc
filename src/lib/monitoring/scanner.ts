@@ -1,13 +1,23 @@
 // ============================================================
-// LiveSOC - Initial Assessment Scanner (safe deterministic mock)
+// LiveSOC - Initial Assessment Scanner
 //
-// Authorized defensive monitoring ONLY. No real network calls,
-// no shell execution. Produces reproducible, clearly-labeled
-// assessment output derived from a stable hash of the target
-// address so the same target always yields the same baseline.
+// Authorized defensive monitoring ONLY.
+//
+// PHASE A: Now attempts a REAL nmap scan first (via safe
+// execFile with a strict argument whitelist). Falls back to
+// the deterministic mock when nmap is not installed or the
+// scan fails. The scanner field in the result indicates
+// which path was used ("nmap" vs "mock").
+//
+// Safety:
+//   * No shell execution. Uses execFile with explicit args.
+//   * Target is validated via validateTarget() BEFORE nmap.
+//   * Argument list is a hard-coded whitelist.
+//   * No -O, no --script, no NSE — pure service/version discovery.
 // ============================================================
 
 import type { AssessmentResult, PortInfo, ServiceInfo } from "@/lib/types";
+import { execFile } from "child_process";
 
 // Realistic authorized-assessment service catalog. Discovery only.
 interface CatalogEntry {
@@ -162,20 +172,203 @@ export interface RunAssessmentOptions {
   isDemo: boolean;
 }
 
+// ============================================================
+// PHASE A — Real nmap execution
+//
+// Runs `nmap -sV -T3 --top-ports N -Pn -oX - <target>` (XML to stdout).
+// Uses execFile (never shell). Returns null if nmap is not installed
+// or the scan fails — the caller falls back to the mock.
+// ============================================================
+
+interface NmapResult {
+  ports: PortInfo[];
+  services: ServiceInfo[];
+  hostname: string | null;
+  osGuess: string | null;
+  scannerVersion: string | null;
+  latencyMs: number | null;
+  durationMs: number;
+  error?: string;
+}
+
+function execFilePAsync(cmd: string, args: string[], opts: { timeout: number; maxBuffer: number }): Promise<{ stdout: string; stderr: string }> {
+  return new Promise((resolve, reject) => {
+    execFile(cmd, args, opts, (err, stdout, stderr) => {
+      if (err) reject(err);
+      else resolve({ stdout, stderr });
+    });
+  });
+}
+
+async function runRealNmap(
+  targetAddress: string,
+  options: RunAssessmentOptions,
+): Promise<NmapResult | null> {
+  const startedAt = Date.now();
+  try {
+    // First check nmap version
+    let versionStr: string | null = null;
+    try {
+      const { stdout: versionOut } = await execFilePAsync("nmap", ["--version"], {
+        timeout: 3000,
+        maxBuffer: 1024 * 1024,
+      });
+      const m = /Nmap version\s+(\S+)/.exec(versionOut);
+      versionStr = m ? `nmap ${m[1]}` : "nmap (version unknown)";
+    } catch {
+      return null; // nmap not installed
+    }
+
+    // Run the scan with XML output
+    const args = [
+      "-sV",           // service/version detection
+      "-T3",           // timing template: normal
+      "--top-ports",
+      String(Math.min(65535, Math.max(1, options.topPorts))),
+      "-Pn",           // skip host discovery
+      "-oX",           // XML output
+      "-",             // to stdout
+      targetAddress,   // validated target
+    ];
+
+    const { stdout } = await execFilePAsync("nmap", args, {
+      timeout: options.timeoutSec * 1000,
+      maxBuffer: 16 * 1024 * 1024,
+    });
+
+    const durationMs = Date.now() - startedAt;
+    const parsed = parseNmapXml(stdout);
+    return {
+      ...parsed,
+      scannerVersion: versionStr,
+      latencyMs: null,
+      durationMs,
+    };
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    return {
+      ports: [],
+      services: [],
+      hostname: null,
+      osGuess: null,
+      scannerVersion: null,
+      latencyMs: null,
+      durationMs: Date.now() - startedAt,
+      error: msg,
+    };
+  }
+}
+
+/**
+ * Parse nmap XML output into ports + services.
+ * Uses regex-based parsing (no DOM dependency) for robustness.
+ */
+function parseNmapXml(xml: string): {
+  ports: PortInfo[];
+  services: ServiceInfo[];
+  hostname: string | null;
+  osGuess: string | null;
+} {
+  const ports: PortInfo[] = [];
+  const services: ServiceInfo[] = [];
+
+  // Extract hostname from <hostname name="..." type="..."/>
+  let hostname: string | null = null;
+  const hostMatch = /<hostname\s+name="([^"]+)"/.exec(xml);
+  if (hostMatch) hostname = hostMatch[1];
+
+  // Extract OS guess from <osmatch name="..." />
+  let osGuess: string | null = null;
+  const osMatch = /<osmatch\s+name="([^"]+)"/.exec(xml);
+  if (osMatch) osGuess = osMatch[1];
+
+  // Extract ports from <port protocol="tcp" portid="22">...<state state="open"/>...<service name="ssh" product="OpenSSH" version="8.9p1" extrainfo="..."/></port>
+  const portRegex = /<port\s+protocol="([^"]+)"\s+portid="(\d+)">[\s\S]*?<state\s+state="([^"]+)"[\s\S]*?(?:<service\s+([^/]*?)\/>)?/g;
+  let match: RegExpExecArray | null;
+  while ((match = portRegex.exec(xml)) !== null) {
+    const protocol = match[1];
+    const portNum = parseInt(match[2], 10);
+    const state = match[3];
+    const serviceAttrs = match[4] || "";
+
+    if (state !== "open") continue;
+    if (!Number.isFinite(portNum) || portNum <= 0) continue;
+
+    // Parse service attributes: name="ssh" product="OpenSSH" version="8.9p1" extrainfo="..."
+    const nameMatch = /name="([^"]+)"/.exec(serviceAttrs);
+    const productMatch = /product="([^"]+)"/.exec(serviceAttrs);
+    const versionMatch = /version="([^"]+)"/.exec(serviceAttrs);
+    const extrainfoMatch = /extrainfo="([^"]+)"/.exec(serviceAttrs);
+
+    const serviceName = nameMatch ? nameMatch[1] : "unknown";
+    const product = productMatch ? productMatch[1] : null;
+    const version = versionMatch ? versionMatch[1] : null;
+    const extrainfo = extrainfoMatch ? extrainfoMatch[1] : null;
+
+    ports.push({
+      id: `port-${portNum}-${protocol}`,
+      number: portNum,
+      protocol,
+      state,
+      serviceName,
+    });
+
+    services.push({
+      id: `svc-${portNum}-${serviceName}`,
+      name: serviceName,
+      port: portNum,
+      protocol,
+      product,
+      version,
+      extrainfo,
+      method: "probe",
+      confidence: 80,
+    });
+  }
+
+  return { ports, services, hostname, osGuess };
+}
+
 export async function runAssessment(
   targetAddress: string,
   options: RunAssessmentOptions,
 ): Promise<AssessmentResult> {
+  const now = new Date();
+  const startedAt = new Date();
+
+  // ============================================================
+  // PHASE A: Try real nmap first
+  // ============================================================
+  const nmapResult = await runRealNmap(targetAddress, options);
+  if (nmapResult && nmapResult.ports.length > 0 && !nmapResult.error) {
+    return {
+      id: `asm-${hashString(targetAddress).toString(36)}`,
+      targetId: `tgt-${hashString(targetAddress).toString(36)}`,
+      status: "completed",
+      reachability: "reachable",
+      latencyMs: nmapResult.latencyMs,
+      hostname: nmapResult.hostname,
+      osGuess: nmapResult.osGuess,
+      startedAt: startedAt.toISOString(),
+      completedAt: new Date().toISOString(),
+      ports: nmapResult.ports,
+      services: nmapResult.services,
+      scanner: "nmap",
+      scannerVersion: nmapResult.scannerVersion,
+      scanDurationMs: nmapResult.durationMs,
+      scanError: null,
+    };
+  }
+
+  // ============================================================
+  // FALLBACK: Deterministic mock (nmap not installed or scan failed)
+  // ============================================================
   const seed = hashString(targetAddress);
   const rand = mulberry32(seed);
 
-  // latency 1-25 ms
   const latencyMs = Math.floor(1 + rand() * 25);
-
-  // 3-8 open ports
   const portCount = Math.max(3, Math.min(8, 3 + Math.floor(rand() * 6)));
 
-  // deterministic shuffle of catalog (Fisher-Yates with seeded rand)
   const catalog = [...PORT_CATALOG];
   for (let i = catalog.length - 1; i > 0; i--) {
     const j = Math.floor(rand() * (i + 1));
@@ -203,12 +396,10 @@ export async function runAssessment(
     confidence: 75 + Math.floor(rand() * 20),
   }));
 
-  // hostname derived from address hash
   const prefix = HOSTNAME_PREFIXES[seed % HOSTNAME_PREFIXES.length];
   const hostnameNum = (seed % 100).toString().padStart(2, "0");
   const hostname = `${prefix}-${hostnameNum}`;
 
-  // OS guess influenced by which OS hints appeared most often
   const osHints = chosen.map((c) => c.osHint ?? "linux");
   const linuxCount = osHints.filter((h) => h === "linux").length;
   const windowsCount = osHints.filter((h) => h === "windows").length;
@@ -221,8 +412,7 @@ export async function runAssessment(
     osGuess = OS_GUESSES[seed % OS_GUESSES.length];
   }
 
-  const now = new Date();
-  const startedAt = new Date(now.getTime() - Math.min(options.timeoutSec, 5) * 1000);
+  const mockStartedAt = new Date(now.getTime() - Math.min(options.timeoutSec, 5) * 1000);
 
   return {
     id: stableId("asm", targetAddress),
@@ -232,9 +422,13 @@ export async function runAssessment(
     latencyMs,
     hostname,
     osGuess,
-    startedAt: startedAt.toISOString(),
+    startedAt: mockStartedAt.toISOString(),
     completedAt: now.toISOString(),
     ports,
     services,
+    scanner: "mock",
+    scannerVersion: null,
+    scanDurationMs: Date.now() - startedAt.getTime(),
+    scanError: nmapResult?.error ?? (nmapResult ? "nmap scan returned no open ports" : "nmap not installed — using mock"),
   };
 }

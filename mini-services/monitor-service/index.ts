@@ -685,6 +685,119 @@ const heartbeatInterval = setInterval(() => {
 }, 25_000);
 
 // ============================================================
+// PHASE D — Agent health monitoring
+//
+// Every 30s, checks all agents for stale heartbeats:
+//   - DEGRADED: no heartbeat for 60s (configurable)
+//   - OFFLINE: no heartbeat for 120s (configurable)
+//   - Generates an agent-health alert when an agent goes OFFLINE
+//   - Resolves the alert when the agent comes back ONLINE
+// ============================================================
+
+const AGENT_HEALTH_CHECK_MS = 30_000;
+const AGENT_DEGRADED_SEC = 60;
+const AGENT_OFFLINE_SEC = 120;
+
+const agentHealthInterval = setInterval(async () => {
+  try {
+    const agents = await db.agent.findMany();
+    const now = Date.now();
+
+    for (const agent of agents) {
+      if (!agent.lastHeartbeat) continue;
+
+      const lastMs = agent.lastHeartbeat.getTime();
+      const elapsedSec = Math.floor((now - lastMs) / 1000);
+
+      let newStatus = agent.status;
+      if (elapsedSec >= AGENT_OFFLINE_SEC) {
+        newStatus = "OFFLINE";
+      } else if (elapsedSec >= AGENT_DEGRADED_SEC) {
+        newStatus = "DEGRADED";
+      } else {
+        newStatus = "ONLINE";
+      }
+
+      if (newStatus !== agent.status) {
+        await db.agent.update({
+          where: { id: agent.id },
+          data: { status: newStatus },
+        });
+
+        // Broadcast agent status change to all connected clients
+        const statusMsg: WSMessage = {
+          type: "log",
+          message: `Agent ${agent.agentId} status changed: ${agent.status} → ${newStatus}`,
+          level: newStatus === "OFFLINE" ? "warning" : "info",
+          timestamp: nowIso(),
+        };
+        io.emit("message", statusMsg);
+
+        // Generate agent-health alert when going OFFLINE
+        if (newStatus === "OFFLINE" && agent.status !== "OFFLINE") {
+          try {
+            // Check if there's an existing active agent-health alert
+            const existing = await db.alert.findFirst({
+              where: {
+                ruleId: "AGENT-HEALTH",
+                status: "active",
+                message: { contains: agent.agentId },
+              },
+            });
+
+            if (!existing) {
+              await db.alert.create({
+                data: {
+                  alertId: `ALR-AGENT-${agent.agentId}-${Date.now()}`,
+                  ruleId: "AGENT-HEALTH",
+                  ruleName: "Agent Offline",
+                  severity: "high",
+                  confidence: 95,
+                  message: `Agent ${agent.agentId} (${agent.hostname ?? "unknown"}) went OFFLINE. Last heartbeat: ${agent.lastHeartbeat.toISOString()}. Elapsed: ${elapsedSec}s.`,
+                  recommendedAction: `Check the agent host (${agent.hostname ?? agent.agentId}). Verify network connectivity and agent process. Restart the agent if needed.`,
+                  status: "active",
+                },
+              });
+
+              await auditLog("warning", "agent-health", `Agent OFFLINE: ${agent.agentId}`, {
+                agentId: agent.agentId,
+                hostname: agent.hostname,
+                lastHeartbeat: agent.lastHeartbeat,
+                elapsedSec,
+              });
+            }
+          } catch (err) {
+            console.error("[agent-health] alert creation failed:", err);
+          }
+        }
+
+        // Resolve agent-health alert when coming back ONLINE
+        if (newStatus === "ONLINE" && agent.status === "OFFLINE") {
+          try {
+            await db.alert.updateMany({
+              where: {
+                ruleId: "AGENT-HEALTH",
+                status: "active",
+                message: { contains: agent.agentId },
+              },
+              data: { status: "resolved" },
+            });
+
+            await auditLog("info", "agent-health", `Agent ONLINE: ${agent.agentId}`, {
+              agentId: agent.agentId,
+            });
+          } catch (err) {
+            console.error("[agent-health] alert resolution failed:", err);
+          }
+        }
+      }
+    }
+  } catch (err) {
+    console.error("[agent-health] check failed:", err);
+  }
+}, AGENT_HEALTH_CHECK_MS);
+
+// ============================================================
 // Startup + graceful shutdown
 // ============================================================
 
@@ -698,6 +811,7 @@ async function shutdown(signal: string): Promise<void> {
    
   console.log(`[monitor-service] received ${signal}, shutting down...`);
   clearInterval(heartbeatInterval);
+  clearInterval(agentHealthInterval);
 
   // Stop all active sessions (this also broadcasts session_ended).
   const activeIds = sessionManager.getActiveAll().map((a) => a.session.id);

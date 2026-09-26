@@ -1,0 +1,59 @@
+# ============================================================
+# LiveSOC Linux Agent Configuration
+#
+# Copy this file to agent.yml and fill in your values.
+# Never commit agent.yml with real API keys.
+# ============================================================
+
+server:
+  # LiveSOC backend URL (the /api/ingest endpoint)
+  url: "http://localhost:3000"
+  # Path to ingestion endpoint
+  ingest_path: "/api/ingest"
+  # Path to heartbeat endpoint
+  heartbeat_path: "/api/agents/heartbeat"
+  # Request timeout in seconds
+  timeout_sec: 10
+  # Retry attempts on failure
+  retry_attempts: 3
+  # Retry delay in seconds
+  retry_delay_sec: 5
+
+agent:
+  # Unique agent identifier (register this in LiveSOC first)
+  agent_id: "agent-linux-001"
+  # API key (register in LiveSOC, get the key, put it here)
+  # KEEP THIS SECRET — do not commit to version control
+  api_key: "CHANGE_ME_TO_YOUR_API_KEY"
+  # Agent display name
+  name: "Lab Linux Agent"
+  # Agent version
+  version: "1.0.0"
+
+heartbeat:
+  # Interval in seconds between heartbeats
+  interval_sec: 30
+
+collectors:
+  # Enable/disable each collector independently
+  auth_log:
+    enabled: true
+    # Log file paths to try (first readable file is used)
+    paths:
+      - "/var/log/auth.log"
+      - "/var/log/secure"
+  syslog:
+    enabled: true
+    paths:
+      - "/var/log/syslog"
+      - "/var/log/messages"
+  journald:
+    enabled: false
+    # journald units to follow (empty = all)
+    units: []
+
+# State file for tracking read positions (file rotation support)
+state_file: "/tmp/livesoc-agent-state.json"
+
+# Logging level: DEBUG | INFO | WARNING | ERROR
+log_level: "INFO"

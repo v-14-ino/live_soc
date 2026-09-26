@@ -43,6 +43,12 @@ model Assessment {
   completedAt   DateTime?
   createdAt     DateTime @default(now())
 
+  // Phase A: real nmap assessment metadata
+  scanner        String?  // "nmap" | "mock" | null
+  scannerVersion String?  // e.g. "nmap 7.94"
+  scanDurationMs Int?     // how long the scan took
+  scanError      String?  // error message if status=failed
+
   ports    Port[]
   services Service[]
   sessions MonitoringSession[]
@@ -417,6 +423,12 @@ model Agent {
   lastHeartbeat DateTime?
   createdAt     DateTime  @default(now())
   updatedAt     DateTime  @updatedAt
+
+  // Phase C: agent authentication
+  // SHA-256 hash of the API key (never store plaintext keys).
+  apiKeyHash    String?
+  // Whether the agent is allowed to ingest. Disabled agents are rejected.
+  enabled       Boolean   @default(true)
 
   heartbeats Heartbeat[]
 

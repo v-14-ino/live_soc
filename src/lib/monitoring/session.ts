@@ -483,6 +483,11 @@ export const sessionManager = {
         osGuess: assessmentData.osGuess ?? null,
         startedAt: new Date(assessmentData.startedAt),
         completedAt: assessmentData.completedAt ? new Date(assessmentData.completedAt) : null,
+        // Phase A: real nmap assessment metadata
+        scanner: assessmentData.scanner ?? null,
+        scannerVersion: assessmentData.scannerVersion ?? null,
+        scanDurationMs: assessmentData.scanDurationMs ?? null,
+        scanError: assessmentData.scanError ?? null,
       },
     });
 

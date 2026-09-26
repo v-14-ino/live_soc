@@ -86,6 +86,11 @@ export interface AssessmentResult {
   completedAt?: string | null;
   ports: PortInfo[];
   services: ServiceInfo[];
+  // Phase A: real nmap assessment metadata
+  scanner?: string | null;        // "nmap" | "mock" | null
+  scannerVersion?: string | null; // e.g. "nmap 7.94"
+  scanDurationMs?: number | null;
+  scanError?: string | null;
 }
 
 // ============================================================

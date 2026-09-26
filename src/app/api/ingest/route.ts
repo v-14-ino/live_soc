@@ -25,6 +25,7 @@ import {
   validateIngestPayload,
   type IngestPayload,
 } from "@/lib/monitoring/normalizer";
+import { authenticateAgent } from "@/lib/monitoring/agent-auth";
 import { auditLog } from "@/lib/monitoring/audit";
 import type { SecurityEvent } from "@/lib/types";
 
@@ -43,12 +44,22 @@ interface IngestInternalResponse {
 }
 
 export const POST = withApiHandler(async (req: NextRequest) => {
+  // 0. Authenticate the agent (Phase C)
+  const agent = await authenticateAgent(req);
+  if (!agent) {
+    await auditLog("warning", "api.ingest", "Unauthenticated ingestion attempt");
+    return NextResponse.json(
+      { error: "Authentication failed. Provide valid X-Agent-ID and X-Agent-Key headers." },
+      { status: 401 },
+    );
+  }
+
   const body = (await req.json()) as IngestBody;
 
   // 1. Validate
   const errors = validateIngestPayload(body);
   if (errors.length > 0) {
-    await auditLog("warning", "api.ingest", "Invalid ingestion payload", { errors });
+    await auditLog("warning", "api.ingest", "Invalid ingestion payload", { errors, agentId: agent.agentId });
     return NextResponse.json(
       { error: "Invalid payload", details: errors },
       { status: 400 },
@@ -64,22 +75,20 @@ export const POST = withApiHandler(async (req: NextRequest) => {
     );
   }
 
-  // 3. Record agent heartbeat (if agentId present)
-  if (body.agentId) {
-    try {
-      await monitorFetch("/internal/heartbeat", {
-        method: "POST",
-        body: JSON.stringify({
-          agentId: body.agentId,
-          hostname: body.hostname,
-          os: body.os,
-          ip: body.sourceIp,
-          status: "ONLINE",
-        }),
-      });
-    } catch {
-      // non-fatal — heartbeat failure shouldn't block ingestion
-    }
+  // 3. Record agent heartbeat (uses authenticated agent)
+  try {
+    await monitorFetch("/internal/heartbeat", {
+      method: "POST",
+      body: JSON.stringify({
+        agentId: agent.agentId,
+        hostname: body.hostname ?? agent.hostname,
+        os: body.os ?? agent.os,
+        ip: body.sourceIp,
+        status: "ONLINE",
+      }),
+    });
+  } catch {
+    // non-fatal — heartbeat failure shouldn't block ingestion
   }
 
   // 4. Normalize the payload into a SecurityEvent
@@ -120,7 +129,7 @@ export const POST = withApiHandler(async (req: NextRequest) => {
       sessionId,
       sourceType: body.sourceType,
       eventType: body.eventType,
-      agentId: body.agentId,
+      agentId: agent.agentId,
     });
 
     return NextResponse.json({

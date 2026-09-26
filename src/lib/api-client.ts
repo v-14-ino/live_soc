@@ -189,6 +189,54 @@ export const api = {
       body: JSON.stringify(payload),
     }),
 
+  // ---- Agent Management (Phase C/D) ----
+  registerAgent: (input: { agentId: string; name?: string; hostname?: string; os?: string }) =>
+    http<{
+      ok: boolean;
+      agentId: string;
+      apiKey: string;
+      message: string;
+    }>("/api/agents/register", {
+      method: "POST",
+      body: JSON.stringify(input),
+    }),
+
+  getAgents: () =>
+    http<{
+      agents: Array<{
+        id: string;
+        agentId: string;
+        name: string;
+        hostname: string | null;
+        os: string | null;
+        version: string | null;
+        ip: string | null;
+        status: string;
+        enabled: boolean;
+        lastHeartbeat: string | null;
+        createdAt: string;
+        updatedAt: string;
+      }>;
+      total: number;
+    }>("/api/agents/register"),
+
+  sendAgentHeartbeat: (agentId: string, apiKey: string, payload: {
+    hostname?: string;
+    os?: string;
+    version?: string;
+    ip?: string;
+    status?: string;
+  }) =>
+    fetch("/api/agents/heartbeat", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "X-Agent-ID": agentId,
+        "X-Agent-Key": apiKey,
+      },
+      body: JSON.stringify(payload),
+    }).then((r) => r.json()),
+
   getHistory: (params: { page?: number; pageSize?: number; status?: string; target?: string } = {}) => {
     const q = new URLSearchParams();
     if (params.page) q.set("page", String(params.page));
