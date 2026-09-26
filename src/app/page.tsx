@@ -14,11 +14,14 @@ import {
   BookOpen,
   Keyboard,
   FlaskConical,
+  Bell,
+  BellRing,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useAppStore } from "@/lib/store";
 import { useMonitorWs } from "@/hooks/use-monitor-ws";
 import { useKeyboardShortcuts } from "@/hooks/use-keyboard-shortcuts";
+import { useBrowserNotifications } from "@/hooks/use-browser-notifications";
 import { AuthWarning } from "@/components/soc/auth-warning";
 import { StatusDot } from "@/components/soc/status-dot";
 import { CommandPalette } from "@/components/soc/command-palette";
@@ -65,6 +68,9 @@ export default function Home() {
 
   // Load settings on mount
   useSettingsLoader();
+
+  // Browser notifications for high-severity alerts (when tab is in background)
+  const notif = useBrowserNotifications();
 
   // Global keyboard shortcuts
   const { showHelp, setShowHelp } = useKeyboardShortcuts({
@@ -347,6 +353,31 @@ export default function Home() {
               <Keyboard className="h-3 w-3" />
               <span className="hidden sm:inline">Shortcuts</span>
             </button>
+            {notif.supported && (
+              <button
+                onClick={notif.requestPermission}
+                className={cn(
+                  "flex items-center gap-1.5 rounded-md border px-2 py-1 font-mono-data text-[10px] uppercase tracking-wider transition-colors",
+                  notif.permission === "granted"
+                    ? "border-[color:var(--soc-success)]/40 bg-[color:var(--soc-success)]/10 text-[color:var(--soc-success)] hover:bg-[color:var(--soc-success)]/20"
+                    : "border-border/60 bg-card/40 text-muted-foreground hover:bg-card/60 hover:text-foreground",
+                )}
+                title={
+                  notif.permission === "granted"
+                    ? "Browser notifications enabled (fires on high/critical alerts when tab is in background)"
+                    : "Enable browser notifications for high-severity alerts"
+                }
+              >
+                {notif.permission === "granted" ? (
+                  <BellRing className="h-3 w-3" />
+                ) : (
+                  <Bell className="h-3 w-3" />
+                )}
+                <span className="hidden sm:inline">
+                  {notif.permission === "granted" ? "Notify On" : "Notify"}
+                </span>
+              </button>
+            )}
             <button
               onClick={() => {
                 // Trigger Cmd+K by dispatching a synthetic keyboard event

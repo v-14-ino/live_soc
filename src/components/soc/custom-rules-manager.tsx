@@ -35,8 +35,19 @@ import {
   AlertCircle,
   Zap,
   FlaskConical,
+  LayoutGrid,
+  KeyRound,
+  ScanLine,
+  Globe,
+  Eye,
+  ShieldAlert,
+  AlertOctagon,
+  Radar,
+  Database,
+  Check,
 } from "lucide-react";
 import { toast } from "sonner";
+import { RULE_TEMPLATES, type RuleTemplate } from "@/lib/rule-templates";
 
 // ============================================================
 // Custom Rules Manager
@@ -77,6 +88,8 @@ export function CustomRulesManager({ open, onOpenChange }: CustomRulesManagerPro
   const [loading, setLoading] = useState(false);
   const [editingRule, setEditingRule] = useState<CustomRule | null>(null);
   const [showEditor, setShowEditor] = useState(false);
+  const [showTemplates, setShowTemplates] = useState(false);
+  const [creatingFromTemplate, setCreatingFromTemplate] = useState(false);
 
   const fetchRules = useCallback(async () => {
     setLoading(true);
@@ -124,6 +137,31 @@ export function CustomRulesManager({ open, onOpenChange }: CustomRulesManagerPro
   const handleCreate = useCallback(() => {
     setEditingRule(null);
     setShowEditor(true);
+  }, []);
+
+  const handleUseTemplate = useCallback(async (template: RuleTemplate) => {
+    setCreatingFromTemplate(true);
+    try {
+      const input: CustomRuleInput = {
+        name: template.name,
+        description: template.description,
+        severity: template.severity,
+        enabled: true,
+        conditions: template.conditions.map((c) => ({ ...c })),
+        threshold: template.threshold,
+        windowMs: template.windowMs,
+        confidence: template.confidence,
+        recommendedAction: template.recommendedAction,
+      };
+      const res = await api.createCustomRule(input);
+      setRules((prev) => [res.rule, ...prev]);
+      setShowTemplates(false);
+      toast.success(`Template "${template.name}" created as ${res.rule.ruleId}`);
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Failed to create rule from template");
+    } finally {
+      setCreatingFromTemplate(false);
+    }
   }, []);
 
   const handleSaved = useCallback((rule: CustomRule) => {
@@ -256,12 +294,31 @@ export function CustomRulesManager({ open, onOpenChange }: CustomRulesManagerPro
           <span className="font-mono-data text-[10px] text-muted-foreground">
             {enabledCount} enabled · {rules.length} total
           </span>
-          <Button onClick={handleCreate} size="sm" className="gap-1.5">
-            <Plus className="h-3.5 w-3.5" />
-            New Rule
-          </Button>
+          <div className="flex items-center gap-2">
+            <Button
+              onClick={() => setShowTemplates(true)}
+              variant="outline"
+              size="sm"
+              className="gap-1.5"
+            >
+              <LayoutGrid className="h-3.5 w-3.5" />
+              Templates
+            </Button>
+            <Button onClick={handleCreate} size="sm" className="gap-1.5">
+              <Plus className="h-3.5 w-3.5" />
+              New Rule
+            </Button>
+          </div>
         </div>
       </DialogContent>
+
+      {showTemplates && (
+        <TemplateGallery
+          onClose={() => setShowTemplates(false)}
+          onUseTemplate={handleUseTemplate}
+          creating={creatingFromTemplate}
+        />
+      )}
 
       {showEditor && (
         <RuleEditor
@@ -584,6 +641,136 @@ function RuleEditor({ rule, onClose, onSaved }: RuleEditorProps) {
             )}
           </Button>
         </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+// ============================================================
+// Template Gallery — pre-built rule templates
+// ============================================================
+
+const TEMPLATE_ICONS: Record<string, typeof KeyRound> = {
+  KeyRound,
+  ScanLine,
+  Globe,
+  Eye,
+  ShieldAlert,
+  AlertOctagon,
+  Radar,
+  Database,
+};
+
+interface TemplateGalleryProps {
+  onClose: () => void;
+  onUseTemplate: (template: RuleTemplate) => void;
+  creating: boolean;
+}
+
+function TemplateGallery({ onClose, onUseTemplate, creating }: TemplateGalleryProps) {
+  return (
+    <Dialog open={true} onOpenChange={() => onClose()}>
+      <DialogContent className="max-h-[90vh] max-w-4xl overflow-hidden p-0 gap-0">
+        <DialogHeader className="border-b border-border/60 px-5 py-4">
+          <DialogTitle className="flex items-center gap-2 font-mono-data text-sm uppercase tracking-wider">
+            <LayoutGrid className="h-4 w-4 text-[color:var(--soc-low)]" />
+            Rule Templates
+          </DialogTitle>
+          <DialogDescription className="text-xs">
+            One-click create a custom rule from a pre-built template. Customize the conditions after creation.
+          </DialogDescription>
+        </DialogHeader>
+
+        <div className="soc-scrollbar max-h-[calc(90vh-140px)] overflow-y-auto p-5">
+          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+            {RULE_TEMPLATES.map((template) => {
+              const Icon = TEMPLATE_ICONS[template.icon] ?? Zap;
+              return (
+                <div
+                  key={template.id}
+                  className="group flex flex-col rounded-lg border border-border/60 bg-card/30 p-4 transition-all hover:border-[color:var(--soc-low)]/40 hover:bg-card/50"
+                >
+                  <div className="flex items-start gap-3">
+                    <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-md bg-[color:var(--soc-low)]/10">
+                      <Icon className="h-4.5 w-4.5 text-[color:var(--soc-low)]" />
+                    </div>
+                    <div className="min-w-0 flex-1">
+                      <div className="flex items-center gap-2">
+                        <h3 className="truncate text-sm font-semibold text-foreground">
+                          {template.name}
+                        </h3>
+                        <SeverityBadge severity={template.severity} size="sm" />
+                      </div>
+                      <span className="font-mono-data text-[9px] uppercase tracking-wider text-muted-foreground">
+                        {template.category}
+                      </span>
+                    </div>
+                  </div>
+
+                  <p className="mt-2 flex-1 text-[11px] leading-relaxed text-muted-foreground">
+                    {template.description}
+                  </p>
+
+                  <div className="mt-2 flex flex-wrap gap-1">
+                    {template.conditions.map((c, i) => (
+                      <span
+                        key={i}
+                        className="rounded-sm border border-border/40 bg-background/40 px-1.5 py-0.5 font-mono-data text-[9px] text-foreground/70"
+                      >
+                        {describeCondition(c)}
+                      </span>
+                    ))}
+                  </div>
+
+                  <div className="mt-2 flex items-center gap-3 font-mono-data text-[9px] text-muted-foreground">
+                    <span>threshold: {template.threshold}</span>
+                    <span>·</span>
+                    <span>window: {template.windowMs / 1000}s</span>
+                    <span>·</span>
+                    <span>confidence: {template.confidence}%</span>
+                  </div>
+
+                  <div className="mt-2 flex flex-wrap gap-1">
+                    {template.tags.map((tag) => (
+                      <span
+                        key={tag}
+                        className="rounded-sm bg-muted/40 px-1 py-0.5 font-mono-data text-[8px] text-muted-foreground"
+                      >
+                        #{tag}
+                      </span>
+                    ))}
+                  </div>
+
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    className="mt-3 gap-1.5 group-hover:border-[color:var(--soc-low)]/40 group-hover:text-[color:var(--soc-low)]"
+                    onClick={() => onUseTemplate(template)}
+                    disabled={creating}
+                  >
+                    {creating ? (
+                      <>
+                        <div className="h-3 w-3 animate-spin rounded-full border-2 border-current border-t-transparent" />
+                        Creating…
+                      </>
+                    ) : (
+                      <>
+                        <Check className="h-3 w-3" />
+                        Use Template
+                      </>
+                    )}
+                  </Button>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+
+        <div className="flex items-center justify-end border-t border-border/60 bg-card/30 px-5 py-3">
+          <Button variant="outline" size="sm" onClick={onClose}>
+            Close
+          </Button>
+        </div>
       </DialogContent>
     </Dialog>
   );

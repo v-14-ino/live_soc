@@ -1826,3 +1826,108 @@ The custom rules engine (`evaluateCustomRules` from REVIEW-6) is now fully integ
 3. **Add threat intel feed integration** — external reputation enrichment for source IPs.
 4. **Add custom rule templates** — pre-built rule templates (e.g. "Detect SSH brute force", "Detect port scan from specific IP") that users can one-click create + customize.
 5. **Add a notification system** — browser notifications or webhook integration when high-severity alerts fire.
+
+---
+Task ID: REVIEW-8 (cron-triggered webDevReview)
+Agent: orchestrator (main)
+Task: QA testing, Custom Rule Templates (one-click create), Browser Notifications for high-severity alerts
+
+## Current Project Status Assessment
+- All 3 services healthy: Next.js (:3000), monitor-service (:3003), Caddy gateway (:81).
+- Full end-to-end flow verified via agent-browser — no console errors, no bugs found in QA.
+- 0 lint errors, 0 warnings.
+- All 6 views functional. All prior rounds' features still working (including custom rules wired into live monitoring with threshold/window tracking + CUSTOM badge).
+
+## Completed Modifications
+
+### 1. New Feature: Custom Rule Templates (one-click create from pre-built gallery)
+
+**New file: `src/lib/rule-templates.ts`**
+- 8 pre-built detection rule templates covering common security monitoring use cases:
+  1. **SSH Brute Force Detection** — eventType=auth_failure, threshold 5/60s, high, 85% confidence
+  2. **Port Scan Detection** — eventType=port_probe, threshold 4/60s, medium, 78% confidence
+  3. **HTTP Request Fuzzing** — eventType=http_request, threshold 20/30s, medium, 72% confidence
+  4. **Monitor Specific Source IP** — sourceIp=192.168.1.50, threshold 1/60s, low, 60% confidence
+  5. **Firewall Deny Burst** — eventType=firewall_deny, threshold 10/30s, medium, 70% confidence
+  6. **Critical Severity Event Watch** — severity=critical, threshold 1/60s, critical, 90% confidence
+  7. **External Scanner Activity** — sourceIp in [list], threshold 1/300s, high, 75% confidence
+  8. **Database Port Access** — destPort in [3306,5432,6379,1433,1521,27017], threshold 1/60s, high, 80% confidence
+- Each template: id, name, description, category, icon hint, severity, conditions, threshold, windowMs, confidence, recommendedAction, tags
+
+**Modified: `src/components/soc/custom-rules-manager.tsx`**
+- Added `showTemplates` + `creatingFromTemplate` state
+- Added `handleUseTemplate(template)` — calls `api.createCustomRule` with the template's values, prepends to rules list, toast "Template X created as CSTM-NNNN"
+- Added "Templates" button (LayoutGrid icon, outline variant) in the footer next to "New Rule"
+- Added `TemplateGallery` component — grid of 8 template cards (2 cols on sm+), each with:
+  - Category icon (KeyRound, ScanLine, Globe, Eye, ShieldAlert, AlertOctagon, Radar, Database)
+  - Template name + severity badge
+  - Category label
+  - Description
+  - Condition chips (human-readable via `describeCondition`)
+  - Threshold/window/confidence stats
+  - Tags (#ssh, #brute-force, etc.)
+  - "Use Template" button (Check icon) with creating spinner state
+  - Hover effect: border turns cyan, bg brightens
+
+**Verified via agent-browser:**
+- Opened Custom Rules → Templates button visible ✓
+- Template gallery opens with all 8 templates ✓
+- Clicked "Use Template" on "Port Scan Detection" → created as CSTM-59e05m ✓
+- Toast: "Template 'Port Scan Detection' created as CSTM-59e05m" ✓
+- Rule appears in list alongside existing CSTM-5n4j2r ✓
+- DB now has 2 custom rules ✓
+
+### 2. New Feature: Browser Notifications for High-Severity Alerts
+
+**New file: `src/hooks/use-browser-notifications.ts`**
+- `useBrowserNotifications()` hook — returns `{ supported, permission, requestPermission }`
+- Requests `Notification.requestPermission()` on button click
+- Monitors the alerts store: when a new high/critical severity alert arrives AND the tab is in the background (not visible), fires a browser notification with the alert's rule name + message
+- Only fires when `document.visibilityState !== "visible"` (when visible, in-app toasts + alerts panel are sufficient)
+- Tracks notified alert IDs (capped at 200) to avoid duplicate notifications
+- Notifications auto-close after 10 seconds; clicking focuses the window
+- Gracefully handles unsupported browsers (checks `typeof Notification !== "undefined"`)
+
+**Modified: `src/app/page.tsx`**
+- Added `useBrowserNotifications()` hook
+- Added "Notify" button (Bell icon) to the top bar — muted style when not granted, green accent (BellRing icon, "Notify On" label) when permission is granted
+- Clicking requests permission with appropriate toast feedback: "Browser notifications enabled" / "blocked" / "not supported"
+
+**Verified via agent-browser:**
+- Notify button visible in top bar ✓
+- Clicking shows toast: "Browser notifications were blocked." (headless browser blocks notifications by default — correct handling) ✓
+- Button doesn't switch to "Notify On" when denied (correct behavior) ✓
+
+### 3. Styling
+- Template gallery: 2-column responsive grid, category icons in cyan-tinted boxes, condition chips, tag pills, hover effects
+- Notify button: green accent when granted, muted when not, Bell/BellRing icon swap
+- Both features use the SOC dark theme, font-mono-data for stats/IDs
+
+## Verification Results
+- `bun run lint`: 0 errors, 0 warnings
+- `dev.log`: clean compiles, no errors
+- agent-browser E2E through gateway (:81):
+  - Templates button → gallery with 8 templates ✓
+  - Use Template → rule created as CSTM-59e05m ✓
+  - Notify button → permission request toast ✓
+  - No console errors throughout ✓
+- All services healthy (HTTP 200)
+- DB: 2 custom rules (CSTM-5n4j2r SSH Brute Force + CSTM-59e05m Port Scan Detection)
+
+## Files Modified/Created This Round
+- `src/lib/rule-templates.ts` (new) — 8 pre-built rule templates
+- `src/components/soc/custom-rules-manager.tsx` — template gallery + handleUseTemplate
+- `src/hooks/use-browser-notifications.ts` (new) — browser notification hook
+- `src/app/page.tsx` — Notify button + useBrowserNotifications hook
+
+## Unresolved Issues / Risks
+- **None critical.** Both features working end-to-end.
+- Browser notifications are blocked by default in headless browsers (and many users block them too). The feature gracefully degrades — the button still works as a permission request, and if denied, the user is informed via toast. The in-app alerts + toasts remain the primary notification mechanism.
+- The template-created rules are immediately enabled and will fire during the next monitoring session (since they're loaded by the session manager on start, as implemented in REVIEW-7).
+
+## Priority Recommendations for Next Phase
+1. **Add a "Replay Live" mode** in History — simulate real-time playback of a historical session with WS-like event streaming into the Live Monitor view.
+2. **Add dashboard customization** — drag-and-drop panel rearrangement in Live Monitor.
+3. **Add threat intel feed integration** — external reputation enrichment for source IPs.
+4. **Add a notification system** — webhook integration (beyond browser notifications) for high-severity alerts.
+5. **Add export/import for custom rules** — let users share rule configurations as JSON files.
