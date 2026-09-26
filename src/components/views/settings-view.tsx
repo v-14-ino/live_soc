@@ -10,6 +10,7 @@ import {
   Radar,
   Shield,
   AlertTriangle,
+  Webhook,
   CheckCircle2,
   Database,
   Cpu,
@@ -19,6 +20,7 @@ import { useAppStore } from "@/lib/store";
 import { api } from "@/lib/api-client";
 import { AuthWarning } from "@/components/soc/auth-warning";
 import { TelemetryAdaptersPanel } from "@/components/soc/telemetry-adapters-panel";
+import { WebhooksPanel } from "@/components/soc/webhooks-panel";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -509,6 +511,15 @@ export function SettingsView() {
                 independent of this field.
               </p>
             </div>
+          </SectionCard>
+
+          {/* WEBHOOK NOTIFICATIONS */}
+          <SectionCard
+            title="Webhook Notifications"
+            description="POST notifications to external endpoints when alerts fire."
+            icon={Webhook}
+          >
+            <WebhooksPanel />
           </SectionCard>
 
           {/* DATA MANAGEMENT */}

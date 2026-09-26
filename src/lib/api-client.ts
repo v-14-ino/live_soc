@@ -13,6 +13,8 @@ import type {
   AppSettings,
   CustomRule,
   CustomRuleInput,
+  WebhookConfig,
+  WebhookInput,
 } from "@/lib/types";
 import type { AdapterConfig, AdapterInfo } from "@/lib/monitoring/adapters";
 
@@ -243,5 +245,31 @@ export const api = {
   deleteCustomRule: (ruleId: string) =>
     http<{ ok: boolean; ruleId: string }>(`/api/rules/${encodeURIComponent(ruleId)}`, {
       method: "DELETE",
+    }),
+
+  // ---- Webhooks ----
+  getWebhooks: () =>
+    http<{ webhooks: WebhookConfig[]; total: number }>("/api/webhooks"),
+
+  createWebhook: (input: WebhookInput) =>
+    http<{ webhook: WebhookConfig }>("/api/webhooks", {
+      method: "POST",
+      body: JSON.stringify(input),
+    }),
+
+  updateWebhook: (webhookId: string, patch: Partial<WebhookInput>) =>
+    http<{ webhook: WebhookConfig }>(`/api/webhooks/${encodeURIComponent(webhookId)}`, {
+      method: "PATCH",
+      body: JSON.stringify(patch),
+    }),
+
+  deleteWebhook: (webhookId: string) =>
+    http<{ ok: boolean; webhookId: string }>(`/api/webhooks/${encodeURIComponent(webhookId)}`, {
+      method: "DELETE",
+    }),
+
+  testWebhook: (webhookId: string) =>
+    http<{ ok: boolean; status?: number; message: string }>(`/api/webhooks/${encodeURIComponent(webhookId)}`, {
+      method: "POST",
     }),
 };

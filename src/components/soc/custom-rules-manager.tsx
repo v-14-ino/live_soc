@@ -45,9 +45,12 @@ import {
   Radar,
   Database,
   Check,
+  Download,
+  Upload,
 } from "lucide-react";
 import { toast } from "sonner";
 import { RULE_TEMPLATES, type RuleTemplate } from "@/lib/rule-templates";
+import { exportRulesJson, parseRulesJson } from "@/lib/export-utils";
 
 // ============================================================
 // Custom Rules Manager
@@ -163,6 +166,60 @@ export function CustomRulesManager({ open, onOpenChange }: CustomRulesManagerPro
       setCreatingFromTemplate(false);
     }
   }, []);
+
+  const handleExport = useCallback(() => {
+    if (rules.length === 0) {
+      toast.info("No rules to export");
+      return;
+    }
+    try {
+      exportRulesJson(rules);
+      toast.success(`Exported ${rules.length} rule(s)`);
+    } catch {
+      toast.error("Failed to export rules");
+    }
+  }, [rules]);
+
+  const handleImport = useCallback(async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    try {
+      const text = await file.text();
+      const parsed = parseRulesJson(text);
+      let created = 0;
+      let failed = 0;
+      for (const r of parsed.rules) {
+        try {
+          const input: CustomRuleInput = {
+            name: r.name,
+            description: r.description ?? "",
+            severity: (r.severity as Severity) ?? "medium",
+            enabled: r.enabled ?? true,
+            conditions: r.conditions as RuleCondition[],
+            threshold: r.threshold ?? 1,
+            windowMs: r.windowMs ?? 60000,
+            confidence: r.confidence ?? 60,
+            recommendedAction: r.recommendedAction ?? "",
+          };
+          await api.createCustomRule(input);
+          created++;
+        } catch {
+          failed++;
+        }
+      }
+      if (created > 0) {
+        toast.success(`Imported ${created} rule(s)${failed > 0 ? ` (${failed} failed)` : ""}`);
+        await fetchRules();
+      } else {
+        toast.error(`Failed to import any rules (${failed} failed)`);
+      }
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Failed to parse rules file");
+    } finally {
+      // reset the input so the same file can be selected again
+      e.target.value = "";
+    }
+  }, [fetchRules]);
 
   const handleSaved = useCallback((rule: CustomRule) => {
     setRules((prev) => {
@@ -295,6 +352,34 @@ export function CustomRulesManager({ open, onOpenChange }: CustomRulesManagerPro
             {enabledCount} enabled · {rules.length} total
           </span>
           <div className="flex items-center gap-2">
+            <Button
+              onClick={handleExport}
+              variant="ghost"
+              size="sm"
+              className="gap-1.5 text-muted-foreground hover:text-foreground"
+              disabled={rules.length === 0}
+              title="Export rules as JSON"
+            >
+              <Download className="h-3.5 w-3.5" />
+              <span className="hidden sm:inline">Export</span>
+            </Button>
+            <Button
+              onClick={() => document.getElementById("import-rules-input")?.click()}
+              variant="ghost"
+              size="sm"
+              className="gap-1.5 text-muted-foreground hover:text-foreground"
+              title="Import rules from JSON"
+            >
+              <Upload className="h-3.5 w-3.5" />
+              <span className="hidden sm:inline">Import</span>
+            </Button>
+            <input
+              id="import-rules-input"
+              type="file"
+              accept=".json,application/json"
+              className="hidden"
+              onChange={handleImport}
+            />
             <Button
               onClick={() => setShowTemplates(true)}
               variant="outline"

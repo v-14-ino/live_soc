@@ -178,3 +178,58 @@ export function exportBundleJson(bundle: ExportBundle, targetLabel: string): voi
   );
   downloadFile(json, `livesoc_bundle_${targetLabel}_${timestampForFilename()}.json`, "application/json");
 }
+
+// ---- Custom Rules export/import ----
+
+import type { CustomRule } from "@/lib/types";
+
+export function exportRulesJson(rules: CustomRule[]): void {
+  const payload = {
+    platform: "LiveSOC — Live Security Monitoring & Detection Platform",
+    exportedAt: new Date().toISOString(),
+    format: "livesoc-custom-rules-v1",
+    ruleCount: rules.length,
+    rules: rules.map((r) => ({
+      name: r.name,
+      description: r.description,
+      severity: r.severity,
+      enabled: r.enabled,
+      conditions: r.conditions,
+      threshold: r.threshold,
+      windowMs: r.windowMs,
+      confidence: r.confidence,
+      recommendedAction: r.recommendedAction,
+    })),
+  };
+  const json = JSON.stringify(payload, null, 2);
+  downloadFile(json, `livesoc_custom_rules_${timestampForFilename()}.json`, "application/json");
+}
+
+export interface ImportedRulesFile {
+  platform?: string;
+  format?: string;
+  ruleCount?: number;
+  rules: Array<{
+    name: string;
+    description?: string;
+    severity?: string;
+    enabled?: boolean;
+    conditions: Array<{
+      field: string;
+      operator: string;
+      value: string | number | string[];
+    }>;
+    threshold?: number;
+    windowMs?: number;
+    confidence?: number;
+    recommendedAction?: string;
+  }>;
+}
+
+export function parseRulesJson(jsonText: string): ImportedRulesFile {
+  const parsed = JSON.parse(jsonText) as ImportedRulesFile;
+  if (!parsed || !Array.isArray(parsed.rules)) {
+    throw new Error("Invalid rules file: missing 'rules' array");
+  }
+  return parsed;
+}

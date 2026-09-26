@@ -181,6 +181,34 @@ export interface CustomRuleInput {
 }
 
 // ============================================================
+// Webhook Configuration (alert notifications)
+// ============================================================
+export interface WebhookConfig {
+  id: string;
+  name: string;
+  url: string;
+  enabled: boolean;
+  severities: string[]; // e.g. ["critical", "high"]
+  secret?: string | null;
+  cooldownSec: number;
+  lastCalled?: string | null;
+  callCount: number;
+  failCount: number;
+  lastError?: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface WebhookInput {
+  name: string;
+  url: string;
+  enabled?: boolean;
+  severities?: string[];
+  secret?: string;
+  cooldownSec?: number;
+}
+
+// ============================================================
 // Scenarios
 // ============================================================
 export interface OffenseScenario {

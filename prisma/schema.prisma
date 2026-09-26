@@ -284,3 +284,25 @@ model CustomRule {
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
 }
+
+// ============================================================
+// Webhook Configurations (for alert notifications)
+// ============================================================
+model WebhookConfig {
+  id          String   @id @default(cuid())
+  name        String
+  url         String
+  enabled     Boolean  @default(true)
+  // Comma-separated severities that trigger this webhook (e.g. "critical,high")
+  severities  String   @default("critical,high")
+  // Optional secret for HMAC signing (sent in X-LiveSOC-Signature header)
+  secret      String?
+  // Minimum seconds between webhook calls (rate limiting)
+  cooldownSec Int      @default(10)
+  lastCalled  DateTime?
+  callCount   Int      @default(0)
+  failCount   Int      @default(0)
+  lastError   String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+}

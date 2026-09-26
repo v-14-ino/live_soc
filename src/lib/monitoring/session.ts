@@ -44,6 +44,7 @@ import {
   checkCustomRuleFiring,
   type CustomRuleContext,
 } from "./custom-rule-context";
+import { loadEnabledWebhooks, notifyWebhooks } from "./webhook-notifier";
 
 const RECENT_EVENTS_CAP = 500;
 const RECENT_ALERTS_CAP = 200;
@@ -57,6 +58,7 @@ export interface ActiveSession {
   telemetry: TelemetryGenerator;
   customRules: CustomRule[];
   customRuleCtx: CustomRuleContext;
+  webhooks: import("@/lib/types").WebhookConfig[];
   subscribers: Set<(msg: WSMessage) => void>;
   eventCounter: { value: number };
   alertCounter: { value: number };
@@ -256,6 +258,13 @@ async function processEvent(active: ActiveSession, event: SecurityEvent): Promis
     }
     broadcastLocal(active, { type: "alert", alert });
 
+    // fire webhooks (non-blocking, respects severity filter + cooldown)
+    if (active.webhooks.length > 0) {
+      notifyWebhooks(alert, active.webhooks).catch((err) => {
+        console.error("[session] webhook notify failed:", err);
+      });
+    }
+
     // correlation
     const result = processDetection(active.correlationState, det, event);
     if (result.offenseScenario) {
@@ -357,6 +366,13 @@ async function processEvent(active: ActiveSession, event: SecurityEvent): Promis
         active.recentAlerts.splice(0, active.recentAlerts.length - RECENT_ALERTS_CAP);
       }
       broadcastLocal(active, { type: "alert", alert });
+
+      // fire webhooks for custom rule alerts too
+      if (active.webhooks.length > 0) {
+        notifyWebhooks(alert, active.webhooks).catch((err) => {
+          console.error("[session] webhook notify (custom) failed:", err);
+        });
+      }
 
       await auditLog("info", "session", `Custom rule fired: ${match.rule.ruleId}`, {
         sessionId: active.session.id,
@@ -560,6 +576,20 @@ export const sessionManager = {
     }
     const customRuleCtx = createCustomRuleContext();
 
+    // 9b. load enabled webhooks for alert notifications
+    let webhooks: import("@/lib/types").WebhookConfig[] = [];
+    try {
+      webhooks = await loadEnabledWebhooks();
+      if (webhooks.length > 0) {
+        await auditLog("info", "session", `Loaded ${webhooks.length} webhook(s) for session`, {
+          sessionId: dbSession.id,
+          webhookIds: webhooks.map((w) => w.id),
+        });
+      }
+    } catch (err) {
+      console.error("[session] failed to load webhooks:", err);
+    }
+
     // 10. telemetry generator
     const telemetry = createTelemetryGenerator({
       targetAddress,
@@ -584,6 +614,7 @@ export const sessionManager = {
       telemetry,
       customRules,
       customRuleCtx,
+      webhooks,
       subscribers: new Set(),
       eventCounter: { value: 0 },
       alertCounter: { value: 0 },
