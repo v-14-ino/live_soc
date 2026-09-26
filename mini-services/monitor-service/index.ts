@@ -199,6 +199,81 @@ async function handleInternalRoute(
     }
     const sub = segments[1];
     const sessionId = decodeURIComponent(segments[2]);
+
+    // ---- PATCH /internal/alerts/:alertId ----
+    // Body: { sessionId, status }
+    // Updates the alert status. If the session is still active in the
+    // sessionManager, both the in-memory list and the DB are updated and
+    // an `alert` message is broadcast to all WS subscribers. If the
+    // session is no longer active (historical), only the DB row is
+    // updated.
+    if (sub === "alerts" && method === "PATCH") {
+      const alertId = decodeURIComponent(segments[2]);
+      const body = (await readJsonBody(req)) as {
+        sessionId?: string;
+        status?: string;
+      };
+      const targetSessionId = (body.sessionId ?? "").trim();
+      const rawStatus = (body.status ?? "").trim();
+      if (!targetSessionId) {
+        sendJson(res, 400, { error: "Missing 'sessionId' in body" });
+        return;
+      }
+      if (rawStatus !== "acknowledged" && rawStatus !== "resolved" && rawStatus !== "active") {
+        sendJson(res, 400, {
+          error: "Invalid 'status' — must be one of acknowledged|resolved|active",
+        });
+        return;
+      }
+      const status = rawStatus as "acknowledged" | "resolved" | "active";
+
+      const active = sessionManager.getActive(targetSessionId);
+      if (active) {
+        // Active session — update in-memory + DB + broadcast.
+        const updated = await sessionManager.updateAlertStatus(
+          targetSessionId,
+          alertId,
+          status,
+        );
+        if (!updated) {
+          sendJson(res, 404, {
+            error: `Alert not found in active session: ${alertId}`,
+            code: "ALERT_NOT_FOUND",
+          });
+          return;
+        }
+        sendJson(res, 200, { ok: true, alertId, status });
+        return;
+      }
+
+      // Session not active — historical alert, update DB only.
+      try {
+        await db.alert.update({
+          where: { alertId },
+          data: { status },
+        });
+        await auditLog("info", "alert", `Historical alert ${alertId} status → ${status}`, {
+          sessionId: targetSessionId,
+          alertId,
+          status,
+        });
+        sendJson(res, 200, { ok: true, alertId, status });
+        return;
+      } catch (err) {
+        await auditLog(
+          "error",
+          "monitor-service",
+          `Historical alert status update failed for ${alertId}: ${(err as Error).message}`,
+          { sessionId: targetSessionId, alertId, status },
+        );
+        sendJson(res, 404, {
+          error: `Alert not found: ${alertId}`,
+          code: "ALERT_NOT_FOUND",
+        });
+        return;
+      }
+    }
+
     const active = sessionManager.getActive(sessionId);
     if (!active) {
       sendJson(res, 404, {

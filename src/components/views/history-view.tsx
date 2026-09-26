@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
 import {
   ScrollText,
   RefreshCw,
@@ -8,6 +8,8 @@ import {
   ChevronLeft,
   ChevronRight,
   Eye,
+  CheckCircle,
+  RotateCcw,
   Activity,
   ShieldAlert,
   Swords,
@@ -26,6 +28,7 @@ import { KpiCard } from "@/components/soc/kpi-card";
 import { SeverityBadge } from "@/components/soc/severity-badge";
 import { StatusDot } from "@/components/soc/status-dot";
 import { AuthWarning } from "@/components/soc/auth-warning";
+import { ExportMenu } from "@/components/soc/export-menu";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -854,9 +857,11 @@ function OverviewTab({
 function EventsTab({
   events,
   eventsTotal,
+  targetLabel,
 }: {
   events: SecurityEvent[];
   eventsTotal: number;
+  targetLabel: string;
 }) {
   const [page, setPage] = useState(1);
   const pageSize = 50;
@@ -870,9 +875,12 @@ function EventsTab({
     <div className="flex flex-col gap-3">
       <div className="flex items-center justify-between">
         <SectionLabel>Event Log ({events.length} shown · {eventsTotal} total)</SectionLabel>
-        <span className="font-mono-data text-[9px] text-muted-foreground">
-          Page {page} / {totalPages}
-        </span>
+        <div className="flex items-center gap-2">
+          <span className="font-mono-data text-[9px] text-muted-foreground">
+            Page {page} / {totalPages}
+          </span>
+          <ExportMenu events={events} targetLabel={targetLabel} size="sm" />
+        </div>
       </div>
       <div className="overflow-hidden rounded-md border border-border/40 bg-card/30">
         <div className="soc-scrollbar max-h-[460px] overflow-y-auto">
@@ -966,17 +974,214 @@ function EventsTab({
   );
 }
 
-function AlertCard({ alert }: { alert: SecurityAlert }) {
-  const color = severityColor(alert.severity);
+function AlertStatusBadge({ status }: { status: string }) {
+  if (status === "acknowledged") {
+    return (
+      <span
+        className="inline-flex items-center gap-1 rounded-sm border px-1.5 py-0.5 font-mono-data text-[9px] font-bold uppercase tracking-wider"
+        style={{
+          color: "var(--soc-medium)",
+          borderColor: "color-mix(in oklch, var(--soc-medium) 40%, transparent)",
+          backgroundColor: "color-mix(in oklch, var(--soc-medium) 12%, transparent)",
+        }}
+      >
+        <Eye className="h-2.5 w-2.5" />
+        ACK
+      </span>
+    );
+  }
+  if (status === "resolved") {
+    return (
+      <span
+        className="inline-flex items-center gap-1 rounded-sm border px-1.5 py-0.5 font-mono-data text-[9px] font-bold uppercase tracking-wider"
+        style={{
+          color: "var(--soc-success)",
+          borderColor: "color-mix(in oklch, var(--soc-success) 40%, transparent)",
+          backgroundColor: "color-mix(in oklch, var(--soc-success) 12%, transparent)",
+        }}
+      >
+        <CheckCircle className="h-2.5 w-2.5" />
+        Resolved
+      </span>
+    );
+  }
+  return null;
+}
+
+type AlertStatus = "active" | "acknowledged" | "resolved";
+
+function AlertActionButtons({
+  alert,
+  sessionId,
+  onUpdated,
+}: {
+  alert: SecurityAlert;
+  sessionId: string;
+  onUpdated: (alertId: string, status: AlertStatus) => void;
+}) {
+  const [busy, setBusy] = useState(false);
+
+  const handleUpdate = async (newStatus: AlertStatus) => {
+    if (busy) return;
+    setBusy(true);
+    try {
+      await api.updateAlertStatus(sessionId, alert.alertId, newStatus);
+      onUpdated(alert.alertId, newStatus);
+      const verb =
+        newStatus === "acknowledged"
+          ? "acknowledged"
+          : newStatus === "resolved"
+            ? "resolved"
+            : "reopened";
+      toast.success(`Alert ${verb}.`, {
+        description: alert.ruleName,
+      });
+    } catch (err) {
+      const e = err as Error & { status?: number };
+      if (!e.status) {
+        toast.error("Unable to connect to monitoring service.", {
+          description: "Please check that the monitor service is running.",
+        });
+      } else if (e.status === 404) {
+        toast.error("Alert not found.", {
+          description: "It may have been removed from the database.",
+        });
+      } else {
+        toast.error(e.message || "Unable to update alert status.");
+      }
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const btnCls =
+    "inline-flex items-center gap-1 rounded-sm border px-1.5 py-0.5 font-mono-data text-[9px] font-bold uppercase tracking-wider transition-colors disabled:opacity-50 disabled:cursor-not-allowed";
+
+  if (alert.status === "active") {
+    return (
+      <div className="flex shrink-0 items-center gap-1">
+        <button
+          type="button"
+          disabled={busy}
+          onClick={() => handleUpdate("acknowledged")}
+          className={cn(btnCls, "hover:bg-[color:var(--soc-medium)]/15")}
+          style={{
+            color: "var(--soc-medium)",
+            borderColor: "color-mix(in oklch, var(--soc-medium) 40%, transparent)",
+          }}
+          title="Acknowledge this alert"
+        >
+          <Eye className="h-2.5 w-2.5" />
+          Ack
+        </button>
+        <button
+          type="button"
+          disabled={busy}
+          onClick={() => handleUpdate("resolved")}
+          className={cn(btnCls, "hover:bg-[color:var(--soc-success)]/15")}
+          style={{
+            color: "var(--soc-success)",
+            borderColor: "color-mix(in oklch, var(--soc-success) 40%, transparent)",
+          }}
+          title="Mark this alert as resolved"
+        >
+          <CheckCircle className="h-2.5 w-2.5" />
+          Resolve
+        </button>
+      </div>
+    );
+  }
+
+  if (alert.status === "acknowledged") {
+    return (
+      <div className="flex shrink-0 items-center gap-1">
+        <button
+          type="button"
+          disabled={busy}
+          onClick={() => handleUpdate("resolved")}
+          className={cn(btnCls, "hover:bg-[color:var(--soc-success)]/15")}
+          style={{
+            color: "var(--soc-success)",
+            borderColor: "color-mix(in oklch, var(--soc-success) 40%, transparent)",
+          }}
+          title="Mark this alert as resolved"
+        >
+          <CheckCircle className="h-2.5 w-2.5" />
+          Resolve
+        </button>
+        <button
+          type="button"
+          disabled={busy}
+          onClick={() => handleUpdate("active")}
+          className={cn(btnCls, "text-muted-foreground hover:text-foreground")}
+          title="Reopen this alert"
+        >
+          <RotateCcw className="h-2.5 w-2.5" />
+          Reopen
+        </button>
+      </div>
+    );
+  }
+
+  // resolved
+  return (
+    <div className="flex shrink-0 items-center gap-1">
+      <button
+        type="button"
+        disabled={busy}
+        onClick={() => handleUpdate("active")}
+        className={cn(btnCls, "text-muted-foreground hover:text-foreground")}
+        title="Reopen this alert"
+      >
+        <RotateCcw className="h-2.5 w-2.5" />
+        Reopen
+      </button>
+    </div>
+  );
+}
+
+function alertAccentColor(alert: SecurityAlert): string {
+  if (alert.status === "resolved") return "var(--soc-success)";
+  if (alert.status === "acknowledged") return "var(--soc-medium)";
+  return severityColor(alert.severity);
+}
+
+function AlertCard({
+  alert,
+  sessionId,
+  onUpdated,
+}: {
+  alert: SecurityAlert;
+  sessionId: string;
+  onUpdated: (alertId: string, status: AlertStatus) => void;
+}) {
+  const accent = alertAccentColor(alert);
+  const opacityCls =
+    alert.status === "resolved"
+      ? "opacity-50"
+      : alert.status === "acknowledged"
+        ? "opacity-80"
+        : "opacity-100";
   return (
     <div
-      className="relative overflow-hidden rounded-md border bg-card/40 p-3 pl-3.5"
-      style={{ borderColor: `color-mix(in oklch, ${color} 30%, transparent)` }}
+      className={cn(
+        "relative overflow-hidden rounded-md border bg-card/40 p-3 pl-3.5 transition-all",
+        opacityCls,
+      )}
+      style={{ borderColor: `color-mix(in oklch, ${accent} 30%, transparent)` }}
     >
-      <div className="absolute left-0 top-0 h-full w-1" style={{ backgroundColor: color }} aria-hidden />
+      <div className="absolute left-0 top-0 h-full w-1" style={{ backgroundColor: accent }} aria-hidden />
       <div className="flex flex-wrap items-center gap-1.5">
         <SeverityBadge severity={alert.severity} size="sm" />
-        <span className="font-mono-data text-[10px] font-semibold text-foreground">{alert.ruleName}</span>
+        <AlertStatusBadge status={alert.status} />
+        <span
+          className={cn(
+            "font-mono-data text-[10px] font-semibold text-foreground",
+            alert.status === "resolved" && "line-through decoration-muted-foreground/60",
+          )}
+        >
+          {alert.ruleName}
+        </span>
         <span className="font-mono-data text-[9px] text-muted-foreground">{alert.alertId}</span>
         <span className="ml-auto font-mono-data text-[9px] text-muted-foreground" title={formatDateTime(alert.timestamp)}>
           {formatTime(alert.timestamp)}
@@ -993,23 +1198,80 @@ function AlertCard({ alert }: { alert: SecurityAlert }) {
           {alert.recommendedAction}
         </div>
       )}
+      <div className="mt-2 flex items-center justify-end gap-2 border-t border-border/30 pt-1.5">
+        <AlertActionButtons alert={alert} sessionId={sessionId} onUpdated={onUpdated} />
+      </div>
     </div>
   );
 }
 
-function AlertsTab({ alerts }: { alerts: SecurityAlert[] }) {
+function AlertsTab({
+  alerts,
+  sessionId,
+  targetLabel,
+}: {
+  alerts: SecurityAlert[];
+  sessionId: string;
+  targetLabel: string;
+}) {
+  const [localAlerts, setLocalAlerts] = useState<SecurityAlert[]>(alerts);
+
+  // Sync local state when the parent's alerts list changes (e.g. on refetch).
+  useEffect(() => {
+    setLocalAlerts(alerts);
+  }, [alerts]);
+
+  const handleUpdated = useCallback((alertId: string, status: AlertStatus) => {
+    setLocalAlerts((prev) =>
+      prev.map((a) => (a.alertId === alertId ? { ...a, status } : a)),
+    );
+  }, []);
+
+  const counts = useMemo(() => {
+    let active = 0;
+    let ack = 0;
+    let resolved = 0;
+    for (const a of localAlerts) {
+      if (a.status === "active") active++;
+      else if (a.status === "acknowledged") ack++;
+      else if (a.status === "resolved") resolved++;
+    }
+    return { active, ack, resolved, total: localAlerts.length };
+  }, [localAlerts]);
+
   return (
     <div className="flex flex-col gap-3">
-      <SectionLabel>Alerts ({alerts.length})</SectionLabel>
-      {alerts.length === 0 ? (
+      <div className="flex flex-wrap items-center gap-2 font-mono-data text-[10px] uppercase tracking-wider text-muted-foreground">
+        <SectionLabel>Alerts ({localAlerts.length})</SectionLabel>
+        <span className="ml-auto flex items-center gap-2">
+          <span title="Open (active) alerts">
+            <span className="text-[color:var(--soc-critical)]">{counts.active}</span> open
+          </span>
+          <span className="text-muted-foreground/40">·</span>
+          <span title="Acknowledged alerts">
+            <span className="text-[color:var(--soc-medium)]">{counts.ack}</span> ack
+          </span>
+          <span className="text-muted-foreground/40">·</span>
+          <span title="Resolved alerts">
+            <span className="text-[color:var(--soc-success)]">{counts.resolved}</span> resolved
+          </span>
+          <ExportMenu alerts={localAlerts} targetLabel={targetLabel} size="sm" />
+        </span>
+      </div>
+      {localAlerts.length === 0 ? (
         <div className="flex items-center justify-center gap-2 rounded-md border border-dashed border-border/50 bg-card/30 px-4 py-8 text-[11px] text-muted-foreground">
           <CheckCircle2 className="h-4 w-4 opacity-50" />
           No alerts were recorded for this session.
         </div>
       ) : (
         <div className="soc-scrollbar max-h-[540px] space-y-2 overflow-y-auto pr-1">
-          {alerts.map((a) => (
-            <AlertCard key={a.id} alert={a} />
+          {localAlerts.map((a) => (
+            <AlertCard
+              key={a.id}
+              alert={a}
+              sessionId={sessionId}
+              onUpdated={handleUpdated}
+            />
           ))}
         </div>
       )}
@@ -1395,10 +1657,10 @@ function DetailDialog({
                 <OverviewTab session={detail.session} assessment={detail.assessment} />
               </TabsContent>
               <TabsContent value="events">
-                <EventsTab events={detail.events} eventsTotal={eventsTotal} />
+                <EventsTab events={detail.events} eventsTotal={eventsTotal} targetLabel={detail.session.targetAddress || detail.target?.address || "session"} />
               </TabsContent>
               <TabsContent value="alerts">
-                <AlertsTab alerts={detail.alerts} />
+                <AlertsTab alerts={detail.alerts} sessionId={detail.session.id} targetLabel={detail.session.targetAddress || detail.target?.address || "session"} />
               </TabsContent>
               <TabsContent value="offense">
                 <OffenseTab

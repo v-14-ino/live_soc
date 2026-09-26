@@ -51,7 +51,11 @@ export function useMonitorWs({
           s.pushEvent(msg.event);
           break;
         case "alert":
-          s.pushAlert(msg.alert);
+          // Use upsert so an incoming alert with the same alertId (e.g.
+          // a status update broadcast by sessionManager.updateAlertStatus)
+          // replaces the existing entry instead of being added as a
+          // duplicate.
+          s.upsertAlert(msg.alert);
           break;
         case "kpi":
           s.setKpi(msg.kpi);

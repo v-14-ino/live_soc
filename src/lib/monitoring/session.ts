@@ -546,6 +546,69 @@ export const sessionManager = {
     return activeSessions.get(sessionId);
   },
 
+  /**
+   * Update the status of an alert in an active session.
+   *
+   * - Updates the in-memory `recentAlerts` list.
+   * - Persists the change to the DB via `db.alert.update`.
+   * - Broadcasts an `alert` WS message with the updated alert so all
+   *   connected clients see the status change immediately.
+   *
+   * Returns the updated alert on success, or `null` if the session or
+   * alert could not be found (or if the DB update failed).
+   */
+  async updateAlertStatus(
+    sessionId: string,
+    alertId: string,
+    status: "acknowledged" | "resolved" | "active",
+  ): Promise<SecurityAlert | null> {
+    const active = activeSessions.get(sessionId);
+    if (!active) return null;
+
+    const idx = active.recentAlerts.findIndex((a) => a.alertId === alertId);
+    if (idx < 0) return null;
+
+    const updated: SecurityAlert = {
+      ...active.recentAlerts[idx],
+      status,
+    };
+    active.recentAlerts[idx] = updated;
+
+    try {
+      await db.alert.update({
+        where: { alertId },
+        data: { status },
+      });
+    } catch (err) {
+      await auditLog(
+        "error",
+        "session",
+        `Failed to persist alert status update for ${alertId}`,
+        {
+          sessionId,
+          alertId,
+          status,
+          error: (err as Error).message,
+          stack: (err as Error).stack,
+        },
+      );
+      // We still broadcast the in-memory change so the operator UI is
+      // responsive; the DB will be retried implicitly on next start.
+    }
+
+    await auditLog("info", "alert", `Alert ${alertId} status → ${status}`, {
+      sessionId,
+      alertId,
+      status,
+      ruleId: updated.ruleId,
+      severity: updated.severity,
+    });
+
+    broadcastLocal(active, { type: "alert", alert: updated });
+
+    return updated;
+  },
+
   getActiveAll(): ActiveSession[] {
     return Array.from(activeSessions.values());
   },

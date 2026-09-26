@@ -1,0 +1,1186 @@
+     1→"use client";
+     2→
+     3→import { useMemo, useState, useCallback, type ReactNode } from "react";
+     4→import {
+     5→  Activity,
+     6→  Square,
+     7→  Pause,
+     8→  Play,
+     9→  Trash2,
+    10→  Search,
+    11→  ChevronDown,
+    12→  ChevronRight,
+    13→  Shield,
+    14→  Network as NetworkIcon,
+    15→  AlertTriangle,
+    16→  AlertOctagon,
+    17→  AlertCircle,
+    18→  ShieldAlert,
+    19→  Zap,
+    20→  Gauge,
+    21→  Server,
+    22→  Info,
+    23→  LucideIcon,
+    24→} from "lucide-react";
+    25→import {
+    26→  AreaChart,
+    27→  Area,
+    28→  ResponsiveContainer,
+    29→  XAxis,
+    30→  YAxis,
+    31→  Tooltip,
+    32→} from "recharts";
+    33→import { useAppStore } from "@/lib/store";
+    34→import { api } from "@/lib/api-client";
+    35→import { Panel } from "@/components/soc/panel";
+    36→import { KpiCard } from "@/components/soc/kpi-card";
+    37→import { SeverityBadge } from "@/components/soc/severity-badge";
+    38→import { StatusDot } from "@/components/soc/status-dot";
+    39→import { AuthWarning } from "@/components/soc/auth-warning";
+    40→import { EventDetailDrawer } from "@/components/soc/event-detail-drawer";
+    41→import { Button } from "@/components/ui/button";
+    42→import { Input } from "@/components/ui/input";
+    43→import {
+    44→  Select,
+    45→  SelectContent,
+    46→  SelectItem,
+    47→  SelectTrigger,
+    48→  SelectValue,
+    49→} from "@/components/ui/select";
+    50→import {
+    51→  Collapsible,
+    52→  CollapsibleContent,
+    53→  CollapsibleTrigger,
+    54→} from "@/components/ui/collapsible";
+    55→import { Skeleton } from "@/components/ui/skeleton";
+    56→import { toast } from "sonner";
+    57→import { cn } from "@/lib/utils";
+    58→import { severityColor } from "@/lib/constants";
+    59→import type {
+    60→  Severity,
+    61→  SecurityEvent,
+    62→  ServiceInfo,
+    63→  TopItem,
+    64→  ProtocolDistribution,
+    65→} from "@/lib/types";
+    66→
+    67→// ============================================================
+    68→// Helpers
+    69→// ============================================================
+    70→
+    71→function formatTime(ts: string): string {
+    72→  try {
+    73→    const d = new Date(ts);
+    74→    if (isNaN(d.getTime())) return "--:--:--";
+    75→    return d.toLocaleTimeString("en-GB", { hour12: false });
+    76→  } catch {
+    77→    return "--:--:--";
+    78→  }
+    79→}
+    80→
+    81→function portAccentColor(port: number): string {
+    82→  if (port === 22 || port === 3389) return "var(--soc-medium)";
+    83→  if ([80, 443, 8080, 8443].includes(port)) return "var(--soc-low)";
+    84→  if ([3306, 5432, 6379, 1433, 27017, 1521].includes(port)) return "var(--soc-critical)";
+    85→  if ([21, 23, 445, 139, 137].includes(port)) return "var(--soc-critical)";
+    86→  if (port === 53) return "var(--soc-info)";
+    87→  return "var(--foreground)";
+    88→}
+    89→
+    90→const PROTOCOL_COLORS: Record<string, string> = {
+    91→  TCP: "var(--soc-low)",
+    92→  UDP: "var(--soc-medium)",
+    93→  HTTP: "var(--soc-success)",
+    94→  HTTPS: "var(--soc-info)",
+    95→  ICMP: "var(--soc-critical)",
+    96→  SSH: "var(--soc-high)",
+    97→  FTP: "var(--soc-high)",
+    98→  DNS: "var(--soc-info)",
+    99→  SMTP: "var(--soc-medium)",
+   100→};
+   101→
+   102→function protoColor(p?: string | null): string {
+   103→  if (!p) return "var(--muted-foreground)";
+   104→  return PROTOCOL_COLORS[p.toUpperCase()] ?? "var(--soc-low)";
+   105→}
+   106→
+   107→function protoBadgeStyle(p?: string | null): React.CSSProperties {
+   108→  const c = protoColor(p);
+   109→  return { color: c, backgroundColor: `color-mix(in oklch, ${c} 15%, transparent)` };
+   110→}
+   111→
+   112→function statusIsActive(status: string): boolean {
+   113→  return (
+   114→    status === "monitoring" ||
+   115→    status === "scanning" ||
+   116→    status === "initializing" ||
+   117→    status === "reconnecting"
+   118→  );
+   119→}
+   120→
+   121→const SEV_FILTERS: Array<{ key: Severity | "all"; label: string }> = [
+   122→  { key: "all", label: "All" },
+   123→  { key: "critical", label: "Critical" },
+   124→  { key: "high", label: "High" },
+   125→  { key: "medium", label: "Medium" },
+   126→  { key: "low", label: "Low" },
+   127→  { key: "info", label: "Info" },
+   128→];
+   129→
+   130→const EVENT_TYPES: string[] = [
+   131→  "all",
+   132→  "connection",
+   133→  "auth_failure",
+   134→  "http_request",
+   135→  "port_probe",
+   136→  "service_access",
+   137→  "firewall_deny",
+   138→  "log_entry",
+   139→];
+   140→
+   141→function fmt(n: number | undefined | null): string {
+   142→  if (n == null) return "—";
+   143→  return n.toLocaleString();
+   144→}
+   145→
+   146→// ============================================================
+   147→// Sub-components
+   148→// ============================================================
+   149→
+   150→function EmptyHint({ text = "No data yet" }: { text?: string }) {
+   151→  return (
+   152→    <div className="flex h-full items-center justify-center font-mono-data text-[10px] uppercase tracking-wider text-muted-foreground/60">
+   153→      {text}
+   154→    </div>
+   155→  );
+   156→}
+   157→
+   158→function ChartTooltip({
+   159→  active,
+   160→  payload,
+   161→  label,
+   162→  color,
+   163→}: {
+   164→  active?: boolean;
+   165→  payload?: Array<{ value?: number; name?: string }>;
+   166→  label?: string;
+   167→  color?: string;
+   168→}) {
+   169→  if (!active || !payload || payload.length === 0) return null;
+   170→  return (
+   171→    <div className="rounded-md border border-border/60 bg-popover px-2 py-1 text-xs shadow-md">
+   172→      {label && (
+   173→        <div className="font-mono-data text-[9px] text-muted-foreground">{label}</div>
+   174→      )}
+   175→      <div
+   176→        className="font-mono-data font-bold"
+   177→        style={{ color: color ?? "var(--foreground)" }}
+   178→      >
+   179→        {payload[0]?.value ?? "—"}
+   180→      </div>
+   181→    </div>
+   182→  );
+   183→}
+   184→
+   185→function MiniAreaChart({
+   186→  data,
+   187→  color,
+   188→  id,
+   189→}: {
+   190→  data: { t: string; v: number }[];
+   191→  color: string;
+   192→  id: string;
+   193→}) {
+   194→  if (!data || data.length === 0) return <EmptyHint />;
+   195→  return (
+   196→    <ResponsiveContainer width="100%" height="100%">
+   197→      <AreaChart data={data} margin={{ top: 4, right: 4, bottom: 0, left: 4 }}>
+   198→        <defs>
+   199→          <linearGradient id={id} x1="0" y1="0" x2="0" y2="1">
+   200→            <stop offset="0%" stopColor={color} stopOpacity={0.45} />
+   201→            <stop offset="100%" stopColor={color} stopOpacity={0} />
+   202→          </linearGradient>
+   203→        </defs>
+   204→        <XAxis dataKey="t" hide />
+   205→        <YAxis hide domain={[0, "auto"]} />
+   206→        <Tooltip
+   207→          content={<ChartTooltip color={color} />}
+   208→          cursor={{ stroke: color, strokeOpacity: 0.3, strokeWidth: 1 }}
+   209→        />
+   210→        <Area
+   211→          type="monotone"
+   212→          dataKey="v"
+   213→          stroke={color}
+   214→          strokeWidth={1.5}
+   215→          fill={`url(#${id})`}
+   216→          isAnimationActive={false}
+   217→          dot={false}
+   218→        />
+   219→      </AreaChart>
+   220→    </ResponsiveContainer>
+   221→  );
+   222→}
+   223→
+   224→function BarList({
+   225→  items,
+   226→  colorFn,
+   227→  format,
+   228→}: {
+   229→  items: TopItem[];
+   230→  colorFn?: (key: string) => string;
+   231→  format?: (key: string) => string;
+   232→}) {
+   233→  const capped = items.slice(0, 6);
+   234→  if (capped.length === 0) return <EmptyHint />;
+   235→  const max = Math.max(1, ...capped.map((i) => i.count));
+   236→  return (
+   237→    <div className="flex h-full flex-col justify-center gap-1.5">
+   238→      {capped.map((item, i) => {
+   239→        const color = colorFn ? colorFn(item.key) : "var(--soc-low)";
+   240→        return (
+   241→          <div
+   242→            key={`${item.key}-${i}`}
+   243→            className="flex items-center gap-2 text-[11px]"
+   244→          >
+   245→            <span
+   246→              className="w-24 shrink-0 truncate font-mono-data text-muted-foreground"
+   247→              title={item.key}
+   248→            >
+   249→              {format ? format(item.key) : item.key}
+   250→            </span>
+   251→            <div className="relative h-2 flex-1 overflow-hidden rounded-sm bg-muted/30">
+   252→              <div
+   253→                className="absolute inset-y-0 left-0 rounded-sm"
+   254→                style={{
+   255→                  width: `${(item.count / max) * 100}%`,
+   256→                  backgroundColor: color,
+   257→                }}
+   258→              />
+   259→            </div>
+   260→            <span className="w-8 shrink-0 text-right font-mono-data font-semibold">
+   261→              {item.count}
+   262→            </span>
+   263→          </div>
+   264→        );
+   265→      })}
+   266→    </div>
+   267→  );
+   268→}
+   269→
+   270→function RecentConnections({ items }: { items: SecurityEvent[] }) {
+   271→  const capped = items.slice(0, 7);
+   272→  if (capped.length === 0) return <EmptyHint />;
+   273→  return (
+   274→    <div className="flex h-full flex-col justify-center gap-1">
+   275→      {capped.map((c) => (
+   276→        <div key={c.id} className="flex items-center gap-2 text-[10px]">
+   277→          <span className="w-12 shrink-0 font-mono-data text-muted-foreground">
+   278→            {formatTime(c.timestamp)}
+   279→          </span>
+   280→          <span className="flex-1 truncate font-mono-data">
+   281→            {c.sourceIp ?? "?"}
+   282→            <span className="text-muted-foreground">:</span>
+   283→            {c.sourcePort ?? "?"}
+   284→            <span className="mx-1 text-muted-foreground">→</span>
+   285→            {c.destIp ?? "?"}
+   286→            <span className="text-muted-foreground">:</span>
+   287→            {c.destPort ?? "?"}
+   288→          </span>
+   289→          <span
+   290→            className="shrink-0 rounded px-1 py-0.5 font-mono-data text-[8px] uppercase"
+   291→            style={protoBadgeStyle(c.protocol)}
+   292→          >
+   293→            {c.protocol?.toUpperCase() ?? "?"}
+   294→          </span>
+   295→        </div>
+   296→      ))}
+   297→    </div>
+   298→  );
+   299→}
+   300→
+   301→function MiniStat({
+   302→  label,
+   303→  value,
+   304→  active,
+   305→}: {
+   306→  label: string;
+   307→  value?: number;
+   308→  active?: boolean;
+   309→}) {
+   310→  return (
+   311→    <div className="flex items-center justify-between gap-2 rounded-md border border-border/40 bg-card/40 px-2.5 py-1.5">
+   312→      <span className="font-mono-data text-[10px] uppercase tracking-wider text-muted-foreground">
+   313→        {label}
+   314→      </span>
+   315→      <span className="flex items-center gap-1.5 font-mono-data text-sm font-bold">
+   316→        {active && (
+   317→          <span className="inline-block h-1.5 w-1.5 rounded-full bg-[color:var(--soc-success)] live-pulse" />
+   318→        )}
+   319→        {value != null ? value.toLocaleString() : "—"}
+   320→      </span>
+   321→    </div>
+   322→  );
+   323→}
+   324→
+   325→function ChartCard({ title, children }: { title: string; children: ReactNode }) {
+   326→  return (
+   327→    <div className="rounded-md border border-border/40 bg-card/30 p-2.5">
+   328→      <div className="mb-2 font-mono-data text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
+   329→        {title}
+   330→      </div>
+   331→      <div className="h-[130px]">{children}</div>
+   332→    </div>
+   333→  );
+   334→}
+   335→
+   336→function InfoRow({
+   337→  label,
+   338→  value,
+   339→  mono = true,
+   340→  color,
+   341→}: {
+   342→  label: string;
+   343→  value?: string | number | null;
+   344→  mono?: boolean;
+   345→  color?: string;
+   346→}) {
+   347→  return (
+   348→    <>
+   349→      <div className="font-mono-data text-[10px] uppercase tracking-wider text-muted-foreground">
+   350→        {label}
+   351→      </div>
+   352→      <div
+   353→        className={cn("truncate", mono && "font-mono-data")}
+   354→        style={color ? { color } : undefined}
+   355→        title={value != null ? String(value) : undefined}
+   356→      >
+   357→        {value != null && value !== "" ? value : "—"}
+   358→      </div>
+   359→    </>
+   360→  );
+   361→}
+   362→
+   363→// ============================================================
+   364→// Target Control Bar
+   365→// ============================================================
+   366→
+   367→function TargetControlBar() {
+   368→  const sessionId = useAppStore((s) => s.sessionId);
+   369→  const status = useAppStore((s) => s.status);
+   370→  const targetAddress = useAppStore((s) => s.targetAddress);
+   371→  const connected = useAppStore((s) => s.connected);
+   372→  const mode = useAppStore((s) => s.mode);
+   373→  const startSession = useAppStore((s) => s.startSession);
+   374→  const stopSession = useAppStore((s) => s.stopSession);
+   375→  const resetSession = useAppStore((s) => s.resetSession);
+   376→  const setStatus = useAppStore((s) => s.setStatus);
+   377→  const setKpi = useAppStore((s) => s.setKpi);
+   378→  const setNetworkActivity = useAppStore((s) => s.setNetworkActivity);
+   379→  const setOffenseScenarios = useAppStore((s) => s.setOffenseScenarios);
+   380→  const setDefenseScenarios = useAppStore((s) => s.setDefenseScenarios);
+   381→
+   382→  const [targetInput, setTargetInput] = useState("192.168.1.100");
+   383→  const [modeInput, setModeInput] = useState<"demo" | "live">("demo");
+   384→  const [busy, setBusy] = useState(false);
+   385→
+   386→  const isActive = statusIsActive(status);
+   387→
+   388→  const handleStart = async () => {
+   389→    const t = targetInput.trim();
+   390→    if (!t) {
+   391→      toast.error("Enter a target IP or domain.");
+   392→      return;
+   393→    }
+   394→    setBusy(true);
+   395→    setStatus("initializing");
+   396→    try {
+   397→      const res = await api.startMonitoring(t, modeInput);
+   398→      const resolvedTarget = res.session.targetAddress || t;
+   399→      startSession({
+   400→        sessionId: res.sessionId,
+   401→        targetAddress: resolvedTarget,
+   402→        mode: res.session.mode,
+   403→        assessment: res.assessment,
+   404→      });
+   405→      toast.success(`Monitoring started on ${resolvedTarget}`);
+   406→      // Seed initial status snapshot (WS will stream updates afterwards)
+   407→      try {
+   408→        const st = await api.getStatus(res.sessionId);
+   409→        if (st.kpi) setKpi(st.kpi);
+   410→        if (st.networkActivity) setNetworkActivity(st.networkActivity);
+   411→        if (st.offenseScenarios?.length) setOffenseScenarios(st.offenseScenarios);
+   412→        if (st.defenseScenarios?.length) setDefenseScenarios(st.defenseScenarios);
+   413→      } catch {
+   414→        /* best-effort seeding; WS will provide live updates */
+   415→      }
+   416→    } catch (err) {
+   417→      const e = err as Error & { status?: number; code?: string };
+   418→      if (e.code === "INVALID_TARGET") {
+   419→        toast.error("Target is unreachable.");
+   420→      } else if (e.code === "START_FAILED") {
+   421→        toast.error("Initial assessment failed.");
+   422→      } else if (e.code === "UNREACHABLE" || !e.status) {
+   423→        toast.error("Unable to connect to monitoring service.");
+   424→      } else {
+   425→        toast.error(e.message || "Unable to start monitoring.");
+   426→      }
+   427→      setStatus("ready");
+   428→    } finally {
+   429→      setBusy(false);
+   430→    }
+   431→  };
+   432→
+   433→  const handleStop = async () => {
+   434→    if (!sessionId) return;
+   435→    setBusy(true);
+   436→    try {
+   437→      await api.stopMonitoring(sessionId);
+   438→      stopSession();
+   439→      toast.success("Monitoring session saved to history.");
+   440→      window.setTimeout(() => resetSession(), 1000);
+   441→    } catch (err) {
+   442→      const e = err as Error & { status?: number; code?: string };
+   443→      if (e.code === "UNREACHABLE" || !e.status) {
+   444→        toast.error("Unable to connect to monitoring service.");
+   445→      } else {
+   446→        toast.error(e.message || "Failed to stop monitoring.");
+   447→      }
+   448→      stopSession();
+   449→      window.setTimeout(() => resetSession(), 1000);
+   450→    } finally {
+   451→      setBusy(false);
+   452→    }
+   453→  };
+   454→
+   455→  return (
+   456→    <div className="flex shrink-0 flex-wrap items-center gap-2 border-b border-border/60 bg-card/40 px-3 py-2 backdrop-blur-md">
+   457→      <div className="flex items-center gap-2">
+   458→        <span className="font-mono-data text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
+   459→          Target
+   460→        </span>
+   461→        <Input
+   462→          value={targetInput}
+   463→          onChange={(e) => setTargetInput(e.target.value)}
+   464→          placeholder="IP or domain"
+   465→          disabled={isActive || busy}
+   466→          className="h-8 w-[200px] font-mono-data text-sm sm:w-[280px]"
+   467→          onKeyDown={(e) => {
+   468→            if (e.key === "Enter" && !isActive && !busy) handleStart();
+   469→          }}
+   470→          aria-label="Monitoring target IP or domain"
+   471→        />
+   472→      </div>
+   473→
+   474→      <Select
+   475→        value={modeInput}
+   476→        onValueChange={(v) => setModeInput(v as "demo" | "live")}
+   477→        disabled={isActive || busy}
+   478→      >
+   479→        <SelectTrigger size="sm" className="h-8 w-full font-mono-data text-xs sm:w-[260px]">
+   480→          <SelectValue />
+   481→        </SelectTrigger>
+   482→        <SelectContent>
+   483→          <SelectItem value="demo">Demo Mode (Simulated Telemetry)</SelectItem>
+   484→          <SelectItem value="live">Live Mode (Real Telemetry)</SelectItem>
+   485→        </SelectContent>
+   486→      </Select>
+   487→
+   488→      {!isActive ? (
+   489→        <Button
+   490→          onClick={handleStart}
+   491→          disabled={busy}
+   492→          size="sm"
+   493→          className="h-8 gap-1.5"
+   494→        >
+   495→          <Activity className="h-3.5 w-3.5" />
+   496→          {busy ? "STARTING…" : "START MONITORING"}
+   497→        </Button>
+   498→      ) : (
+   499→        <Button
+   500→          onClick={handleStop}
+   501→          disabled={busy}
+   502→          size="sm"
+   503→          variant="destructive"
+   504→          className="h-8 gap-1.5"
+   505→        >
+   506→          <Square className="h-3.5 w-3.5 fill-current" />
+   507→          {busy ? "STOPPING…" : "STOP MONITORING"}
+   508→        </Button>
+   509→      )}
+   510→
+   511→      {isActive && (
+   512→        <div className="flex flex-wrap items-center gap-3 pl-1">
+   513→          <div className="flex items-center gap-1.5">
+   514→            <span className="font-mono-data text-[10px] uppercase tracking-wider text-muted-foreground">
+   515→              Active
+   516→            </span>
+   517→            <span className="font-mono-data text-xs font-semibold">
+   518→              {targetAddress}
+   519→            </span>
+   520→          </div>
+   521→          <StatusDot
+   522→            status={status}
+   523→            pulse={isActive}
+   524→            label={status.toUpperCase()}
+   525→            className="text-[10px]"
+   526→          />
+   527→          <StatusDot
+   528→            status={connected ? "connected" : "disconnected"}
+   529→            pulse={connected}
+   530→            label={connected ? "LIVE" : "RECONNECTING"}
+   531→            className="text-[10px]"
+   532→          />
+   533→          {mode === "demo" && (
+   534→            <span className="rounded-sm border border-[color:var(--soc-medium)]/40 bg-[color:var(--soc-medium)]/10 px-1.5 py-0.5 font-mono-data text-[9px] font-bold uppercase tracking-wider text-[color:var(--soc-medium)]">
+   535→              Demo
+   536→            </span>
+   537→          )}
+   538→        </div>
+   539→      )}
+   540→
+   541→      <div className="ml-auto hidden items-center md:flex">
+   542→        <AuthWarning />
+   543→      </div>
+   544→    </div>
+   545→  );
+   546→}
+   547→
+   548→// ============================================================
+   549→// Assessment Panel
+   550→// ============================================================
+   551→
+   552→function AssessmentPanel() {
+   553→  const assessment = useAppStore((s) => s.assessment);
+   554→  const targetAddress = useAppStore((s) => s.targetAddress);
+   555→  const [open, setOpen] = useState(true);
+   556→
+   557→  const servicesByPort = useMemo(() => {
+   558→    const m = new Map<number, ServiceInfo>();
+   559→    if (!assessment) return m;
+   560→    for (const s of assessment.services) m.set(s.port, s);
+   561→    return m;
+   562→  }, [assessment]);
+   563→
+   564→  if (!assessment) return null;
+   565→
+   566→  const portCount = assessment.ports.length;
+   567→  const portRowsHeight = portCount > 8 ? "max-h-[200px] overflow-y-auto soc-scrollbar" : "";
+   568→
+   569→  return (
+   570→    <Collapsible open={open} onOpenChange={setOpen}>
+   571→      <div className="overflow-hidden rounded-lg border border-border/60 bg-card/50 backdrop-blur-sm">
+   572→        <CollapsibleTrigger className="flex w-full items-center justify-between gap-2 border-b border-border/50 bg-card/30 px-4 py-2.5 transition-colors hover:bg-accent/30">
+   573→          <div className="flex min-w-0 items-center gap-2">
+   574→            {open ? (
+   575→              <ChevronDown className="h-4 w-4 shrink-0 text-muted-foreground" />
+   576→            ) : (
+   577→              <ChevronRight className="h-4 w-4 shrink-0 text-muted-foreground" />
+   578→            )}
+   579→            <span className="font-mono-data text-xs font-semibold uppercase tracking-wider">
+   580→              Initial Assessment
+   581→            </span>
+   582→            <span className="truncate font-mono-data text-[10px] text-muted-foreground">
+   583→              {assessment.reachability} · {portCount} open port{portCount === 1 ? "" : "s"}
+   584→            </span>
+   585→          </div>
+   586→          {assessment.status && (
+   587→            <span className="shrink-0 rounded-sm border border-[color:var(--soc-success)]/40 bg-[color:var(--soc-success)]/10 px-1.5 py-0.5 font-mono-data text-[9px] font-bold uppercase tracking-wider text-[color:var(--soc-success)]">
+   588→              {assessment.status}
+   589→            </span>
+   590→          )}
+   591→        </CollapsibleTrigger>
+   592→        <CollapsibleContent>
+   593→          <div className="grid grid-cols-1 lg:grid-cols-2 lg:divide-x lg:divide-border/40">
+   594→            {/* Target Information */}
+   595→            <div className="p-3">
+   596→              <div className="mb-2.5 font-mono-data text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
+   597→                Target Information
+   598→              </div>
+   599→              <div className="grid grid-cols-[110px_1fr] gap-x-3 gap-y-1.5 text-[11px]">
+   600→                <InfoRow label="Target" value={targetAddress || assessment.targetId} />
+   601→                <InfoRow label="Reachability" value={assessment.reachability} />
+   602→                <InfoRow label="Hostname" value={assessment.hostname} />
+   603→                <InfoRow label="OS Guess" value={assessment.osGuess} />
+   604→                <InfoRow
+   605→                  label="Latency"
+   606→                  value={assessment.latencyMs != null ? `${assessment.latencyMs} ms` : null}
+   607→                />
+   608→                <InfoRow label="Assessment" value={assessment.status} color="var(--soc-success)" />
+   609→                <InfoRow label="Open Ports" value={portCount} color="var(--soc-low)" />
+   610→              </div>
+   611→            </div>
+   612→
+   613→            {/* Open Ports & Services */}
+   614→            <div className="p-3">
+   615→              <div className="mb-2.5 font-mono-data text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
+   616→                Open Ports & Services
+   617→              </div>
+   618→              {portCount === 0 ? (
+   619→                <EmptyHint text="No open ports detected" />
+   620→              ) : (
+   621→                <div className={portRowsHeight}>
+   622→                  <table className="w-full text-[11px]">
+   623→                    <thead className="sticky top-0 bg-card/90 backdrop-blur-sm">
+   624→                      <tr className="border-b border-border/40 text-left font-mono-data text-[9px] uppercase tracking-wider text-muted-foreground">
+   625→                        <th className="px-2 py-1 font-medium">Port</th>
+   626→                        <th className="px-2 py-1 font-medium">Proto</th>
+   627→                        <th className="px-2 py-1 font-medium">State</th>
+   628→                        <th className="px-2 py-1 font-medium">Service</th>
+   629→                        <th className="px-2 py-1 font-medium">Product</th>
+   630→                        <th className="px-2 py-1 font-medium">Version</th>
+   631→                      </tr>
+   632→                    </thead>
+   633→                    <tbody>
+   634→                      {assessment.ports.map((p) => {
+   635→                        const svc = servicesByPort.get(p.number);
+   636→                        return (
+   637→                          <tr
+   638→                            key={p.id}
+   639→                            className="border-b border-border/20 hover:bg-accent/20 transition-colors"
+   640→                          >
+   641→                            <td
+   642→                              className="px-2 py-1 font-mono-data font-bold"
+   643→                              style={{ color: portAccentColor(p.number) }}
+   644→                            >
+   645→                              {p.number}
+   646→                            </td>
+   647→                            <td className="px-2 py-1 font-mono-data uppercase text-[10px]">
+   648→                              {p.protocol}
+   649→                            </td>
+   650→                            <td className="px-2 py-1 font-mono-data text-[10px]">{p.state}</td>
+   651→                            <td className="px-2 py-1 truncate" title={svc?.name ?? p.serviceName ?? ""}>
+   652→                              {svc?.name ?? p.serviceName ?? "—"}
+   653→                            </td>
+   654→                            <td className="px-2 py-1 font-mono-data text-[10px] truncate" title={svc?.product ?? ""}>
+   655→                              {svc?.product ?? "—"}
+   656→                            </td>
+   657→                            <td className="px-2 py-1 font-mono-data text-[10px] truncate" title={svc?.version ?? ""}>
+   658→                              {svc?.version ?? "—"}
+   659→                            </td>
+   660→                          </tr>
+   661→                        );
+   662→                      })}
+   663→                    </tbody>
+   664→                  </table>
+   665→                </div>
+   666→              )}
+   667→            </div>
+   668→          </div>
+   669→        </CollapsibleContent>
+   670→      </div>
+   671→    </Collapsible>
+   672→  );
+   673→}
+   674→
+   675→// ============================================================
+   676→// KPI Grid
+   677→// ============================================================
+   678→
+   679→interface KpiCardDef {
+   680→  label: string;
+   681→  value: string;
+   682→  icon: LucideIcon;
+   683→  accent: "default" | "critical" | "high" | "medium" | "low" | "info" | "success";
+   684→  live: boolean;
+   685→}
+   686→
+   687→function KpiGrid() {
+   688→  const kpi = useAppStore((s) => s.kpi);
+   689→  const status = useAppStore((s) => s.status);
+   690→  const isActive = statusIsActive(status);
+   691→
+   692→  const cards: KpiCardDef[] = [
+   693→    { label: "Events", value: fmt(kpi?.events), icon: Activity, accent: "default", live: isActive },
+   694→    { label: "Critical", value: fmt(kpi?.critical), icon: AlertOctagon, accent: "critical", live: false },
+   695→    { label: "High", value: fmt(kpi?.high), icon: AlertTriangle, accent: "high", live: false },
+   696→    { label: "Medium", value: fmt(kpi?.medium), icon: AlertCircle, accent: "medium", live: false },
+   697→    { label: "Low", value: fmt(kpi?.low), icon: ShieldAlert, accent: "low", live: false },
+   698→    { label: "Info", value: fmt(kpi?.info), icon: Info, accent: "info", live: false },
+   699→    { label: "Active Conns", value: fmt(kpi?.activeConnections), icon: NetworkIcon, accent: "default", live: isActive },
+   700→    { label: "Events/Sec", value: fmt(kpi?.eventsPerSec), icon: Zap, accent: "default", live: isActive },
+   701→    { label: "Traffic KB/s", value: fmt(kpi?.trafficRate), icon: Gauge, accent: "default", live: isActive },
+   702→    { label: "Open Ports", value: fmt(kpi?.openPorts), icon: Server, accent: "default", live: false },
+   703→  ];
+   704→
+   705→  return (
+   706→    <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-5 xl:grid-cols-10">
+   707→      {cards.map((c) => (
+   708→        <KpiCard
+   709→          key={c.label}
+   710→          label={c.label}
+   711→          value={c.value}
+   712→          icon={c.icon}
+   713→          accent={c.accent}
+   714→          live={c.live}
+   715→        />
+   716→      ))}
+   717→    </div>
+   718→  );
+   719→}
+   720→
+   721→// ============================================================
+   722→// Live Security Log
+   723→// ============================================================
+   724→
+   725→function LiveSecurityLog() {
+   726→  const events = useAppStore((s) => s.events);
+   727→  const paused = useAppStore((s) => s.paused);
+   728→  const setPaused = useAppStore((s) => s.setPaused);
+   729→  const clearLiveView = useAppStore((s) => s.clearLiveView);
+   730→
+   731→  const [sevFilter, setSevFilter] = useState<Severity | "all">("all");
+   732→  const [typeFilter, setTypeFilter] = useState<string>("all");
+   733→  const [search, setSearch] = useState("");
+   734→  const [selectedEvent, setSelectedEvent] = useState<SecurityEvent | null>(null);
+   735→  const [drawerOpen, setDrawerOpen] = useState(false);
+   736→
+   737→  const filtered = useMemo(() => {
+   738→    const q = search.trim().toLowerCase();
+   739→    return events
+   740→      .filter((e) => {
+   741→        if (sevFilter !== "all" && e.severity !== sevFilter) return false;
+   742→        if (typeFilter !== "all" && e.eventType !== typeFilter) return false;
+   743→        if (q) {
+   744→          const hay = `${e.sourceIp ?? ""} ${e.destIp ?? ""} ${e.message}`.toLowerCase();
+   745→          if (!hay.includes(q)) return false;
+   746→        }
+   747→        return true;
+   748→      })
+   749→      .slice(0, 200);
+   750→  }, [events, sevFilter, typeFilter, search]);
+   751→
+   752→  const relatedEvents = useMemo(() => {
+   753→    if (!selectedEvent) return [];
+   754→    return events
+   755→      .filter(
+   756→        (e) =>
+   757→          e.eventId !== selectedEvent.eventId &&
+   758→          ((e.sourceIp && e.sourceIp === selectedEvent.sourceIp) ||
+   759→            (e.destPort && e.destPort === selectedEvent.destPort)),
+   760→      )
+   761→      .slice(0, 30);
+   762→  }, [selectedEvent, events]);
+   763→
+   764→  const handleEventClick = useCallback((e: SecurityEvent) => {
+   765→    setSelectedEvent(e);
+   766→    setDrawerOpen(true);
+   767→  }, []);
+   768→
+   769→  return (
+   770→    <Panel
+   771→      title="Live Security Log"
+   772→      icon={<Activity className="h-4 w-4" />}
+   773→      className="h-full"
+   774→      bodyClassName="flex min-h-0 flex-col"
+   775→      actions={
+   776→        <>
+   777→          <Button
+   778→            size="sm"
+   779→            variant="outline"
+   780→            className="h-7 gap-1 px-2 text-[11px]"
+   781→            onClick={() => setPaused(!paused)}
+   782→            aria-label={paused ? "Resume stream" : "Pause stream"}
+   783→          >
+   784→            {paused ? <Play className="h-3 w-3" /> : <Pause className="h-3 w-3" />}
+   785→            {paused ? "Resume" : "Pause"}
+   786→          </Button>
+   787→          <Button
+   788→            size="sm"
+   789→            variant="outline"
+   790→            className="h-7 gap-1 px-2 text-[11px]"
+   791→            onClick={() => {
+   792→              clearLiveView();
+   793→              toast.success("Live view cleared. History preserved.");
+   794→            }}
+   795→            aria-label="Clear live view"
+   796→          >
+   797→            <Trash2 className="h-3 w-3" />
+   798→            Clear
+   799→          </Button>
+   800→        </>
+   801→      }
+   802→    >
+   803→      {/* Filters row */}
+   804→      <div className="flex flex-wrap items-center gap-2 border-b border-border/40 px-3 py-2">
+   805→        <div className="flex flex-wrap items-center gap-1">
+   806→          {SEV_FILTERS.map((f) => {
+   807→            const active = sevFilter === f.key;
+   808→            const sc = f.key !== "all" ? severityColor(f.key) : undefined;
+   809→            return (
+   810→              <button
+   811→                key={f.key}
+   812→                type="button"
+   813→                onClick={() => setSevFilter(f.key)}
+   814→                className={cn(
+   815→                  "rounded-sm border px-1.5 py-0.5 font-mono-data text-[10px] uppercase tracking-wider transition-colors",
+   816→                  active
+   817→                    ? "text-foreground"
+   818→                    : "border-transparent text-muted-foreground hover:text-foreground",
+   819→                )}
+   820→                style={
+   821→                  active && sc
+   822→                    ? {
+   823→                        color: sc,
+   824→                        borderColor: `color-mix(in oklch, ${sc} 40%, transparent)`,
+   825→                        backgroundColor: `color-mix(in oklch, ${sc} 12%, transparent)`,
+   826→                      }
+   827→                    : active
+   828→                      ? { borderColor: "var(--border)", backgroundColor: "var(--accent)" }
+   829→                      : undefined
+   830→                }
+   831→              >
+   832→                {f.label}
+   833→              </button>
+   834→            );
+   835→          })}
+   836→        </div>
+   837→
+   838→        <Select value={typeFilter} onValueChange={setTypeFilter}>
+   839→          <SelectTrigger size="sm" className="h-7 w-[150px] text-[11px]">
+   840→            <SelectValue />
+   841→          </SelectTrigger>
+   842→          <SelectContent>
+   843→            {EVENT_TYPES.map((t) => (
+   844→              <SelectItem key={t} value={t}>
+   845→                {t === "all" ? "All Types" : t}
+   846→              </SelectItem>
+   847→            ))}
+   848→          </SelectContent>
+   849→        </Select>
+   850→
+   851→        <div className="relative min-w-[140px] flex-1">
+   852→          <Search className="absolute left-2 top-1/2 h-3 w-3 -translate-y-1/2 text-muted-foreground" />
+   853→          <Input
+   854→            value={search}
+   855→            onChange={(e) => setSearch(e.target.value)}
+   856→            placeholder="Search source / dest / message…"
+   857→            className="h-7 pl-7 text-[11px]"
+   858→            aria-label="Search events"
+   859→          />
+   860→        </div>
+   861→      </div>
+   862→
+   863→      {/* Table */}
+   864→      <div className="soc-scrollbar max-h-[420px] min-h-0 flex-1 overflow-y-auto">
+   865→        {filtered.length === 0 ? (
+   866→          <div className="flex min-h-[200px] flex-col items-center justify-center gap-2 py-8 text-muted-foreground">
+   867→            <span className="relative inline-flex h-2 w-2">
+   868→              <span className="absolute inline-block h-full w-full rounded-full bg-[color:var(--soc-low)] live-pulse" />
+   869→            </span>
+   870→            <span className="font-mono-data text-xs uppercase tracking-wider">
+   871→              Waiting for telemetry…
+   872→            </span>
+   873→          </div>
+   874→        ) : (
+   875→          <table className="w-full text-[11px]">
+   876→            <thead className="sticky top-0 z-10 bg-card/90 backdrop-blur-sm">
+   877→              <tr className="border-b border-border/50 text-left font-mono-data text-[9px] uppercase tracking-wider text-muted-foreground">
+   878→                <th className="px-2 py-1.5 font-medium">Time</th>
+   879→                <th className="px-2 py-1.5 font-medium">Source</th>
+   880→                <th className="px-2 py-1.5 font-medium">Destination</th>
+   881→                <th className="px-2 py-1.5 font-medium">Proto</th>
+   882→                <th className="px-2 py-1.5 font-medium">Event</th>
+   883→                <th className="px-2 py-1.5 font-medium">Severity</th>
+   884→                <th className="px-2 py-1.5 font-medium">Status</th>
+   885→              </tr>
+   886→            </thead>
+   887→            <tbody>
+   888→              {filtered.map((e) => {
+   889→                const src = e.sourceIp
+   890→                  ? `${e.sourceIp}${e.sourcePort ? `:${e.sourcePort}` : ""}`
+   891→                  : "—";
+   892→                const dst = e.destIp
+   893→                  ? `${e.destIp}${e.destPort ? `:${e.destPort}` : ""}`
+   894→                  : e.destPort
+   895→                    ? `:${e.destPort}`
+   896→                    : "—";
+   897→                return (
+   898→                  <tr
+   899→                    key={e.id}
+   900→                    onClick={() => handleEventClick(e)}
+   901→                    className="cursor-pointer border-b border-border/20 transition-colors hover:bg-accent/30"
+   902→                  >
+   903→                    <td className="whitespace-nowrap px-2 py-1.5 font-mono-data text-muted-foreground">
+   904→                      {formatTime(e.timestamp)}
+   905→                    </td>
+   906→                    <td className="whitespace-nowrap px-2 py-1.5 font-mono-data">{src}</td>
+   907→                    <td className="whitespace-nowrap px-2 py-1.5 font-mono-data">{dst}</td>
+   908→                    <td className="whitespace-nowrap px-2 py-1.5">
+   909→                      <span
+   910→                        className="rounded px-1 py-0.5 font-mono-data text-[9px] uppercase"
+   911→                        style={protoBadgeStyle(e.protocol)}
+   912→                      >
+   913→                        {e.protocol?.toUpperCase() ?? "?"}
+   914→                      </span>
+   915→                    </td>
+   916→                    <td className="max-w-[280px] px-2 py-1.5">
+   917→                      <div className="flex items-center gap-1.5">
+   918→                        {e.isDemo && (
+   919→                          <span className="shrink-0 rounded-sm border border-[color:var(--soc-medium)]/40 bg-[color:var(--soc-medium)]/10 px-1 py-0.5 font-mono-data text-[8px] font-bold uppercase text-[color:var(--soc-medium)]">
+   920→                            Demo
+   921→                          </span>
+   922→                        )}
+   923→                        <span
+   924→                          className="truncate"
+   925→                          title={`${e.eventType} — ${e.message}`}
+   926→                        >
+   927→                          <span className="font-mono-data text-[10px] font-semibold text-foreground">
+   928→                            {e.eventType}
+   929→                          </span>
+   930→                          <span className="text-muted-foreground"> {e.message}</span>
+   931→                        </span>
+   932→                      </div>
+   933→                    </td>
+   934→                    <td className="whitespace-nowrap px-2 py-1.5">
+   935→                      <SeverityBadge severity={e.severity} size="sm" />
+   936→                    </td>
+   937→                    <td className="whitespace-nowrap px-2 py-1.5">
+   938→                      <span className="inline-flex items-center gap-1 font-mono-data text-[10px] text-muted-foreground">
+   939→                        <span
+   940→                          className="inline-block h-1.5 w-1.5 rounded-full"
+   941→                          style={{
+   942→                            backgroundColor:
+   943→                              e.status === "blocked"
+   944→                                ? "var(--soc-critical)"
+   945→                                : e.status === "allowed"
+   946→                                  ? "var(--soc-success)"
+   947→                                  : "var(--muted-foreground)",
+   948→                          }}
+   949→                        />
+   950→                        {e.status}
+   951→                      </span>
+   952→                    </td>
+   953→                  </tr>
+   954→                );
+   955→              })}
+   956→            </tbody>
+   957→          </table>
+   958→        )}
+   959→      </div>
+   960→      <EventDetailDrawer
+   961→        event={selectedEvent}
+   962→        open={drawerOpen}
+   963→        onOpenChange={setDrawerOpen}
+   964→        relatedEvents={relatedEvents}
+   965→      />
+   966→    </Panel>
+   967→  );
+   968→}
+   969→
+   970→// ============================================================
+   971→// Network Activity Panel
+   972→// ============================================================
+   973→
+   974→function NetworkActivityPanel() {
+   975→  const na = useAppStore((s) => s.networkActivity);
+   976→  const status = useAppStore((s) => s.status);
+   977→  const isActive = statusIsActive(status);
+   978→
+   979→  const protoItems: TopItem[] = useMemo(() => {
+   980→    if (!na) return [];
+   981→    return na.protocolDistribution.map((p: ProtocolDistribution) => ({
+   982→      key: p.protocol,
+   983→      count: p.count,
+   984→    }));
+   985→  }, [na]);
+   986→
+   987→  return (
+   988→    <Panel
+   989→      title="Live Network Activity"
+   990→      icon={<NetworkIcon className="h-4 w-4" />}
+   991→      bodyClassName="flex flex-col"
+   992→    >
+   993→      {/* Mini KPIs */}
+   994→      <div className="grid grid-cols-2 gap-2 border-b border-border/40 px-3 py-2 sm:grid-cols-4">
+   995→        <MiniStat label="Connections" value={na?.connectionCount} active={isActive} />
+   996→        <MiniStat label="Conn/Sec" value={na?.connectionsPerSec} active={isActive} />
+   997→        <MiniStat label="Request Rate" value={na?.requestRate} active={isActive} />
+   998→        <MiniStat label="Traffic KB/s" value={na?.trafficRate} active={isActive} />
+   999→      </div>
+  1000→
+  1001→      {/* Charts grid */}
+  1002→      <div className="grid grid-cols-1 gap-3 p-3 md:grid-cols-2">
+  1003→        <ChartCard title="Events / Sec">
+  1004→          {na ? (
+  1005→            <MiniAreaChart
+  1006→              data={na.eventsPerSecTimeline}
+  1007→              color="var(--soc-low)"
+  1008→              id="events-area"
+  1009→            />
+  1010→          ) : (
+  1011→            <Skeleton className="h-full w-full" />
+  1012→          )}
+  1013→        </ChartCard>
+  1014→
+  1015→        <ChartCard title="Traffic Rate (KB/s)">
+  1016→          {na ? (
+  1017→            <MiniAreaChart
+  1018→              data={na.trafficTimeline}
+  1019→              color="var(--soc-info)"
+  1020→              id="traffic-area"
+  1021→            />
+  1022→          ) : (
+  1023→            <Skeleton className="h-full w-full" />
+  1024→          )}
+  1025→        </ChartCard>
+  1026→
+  1027→        <ChartCard title="Protocol Distribution">
+  1028→          {na ? (
+  1029→            <BarList items={protoItems} colorFn={protoColor} />
+  1030→          ) : (
+  1031→            <Skeleton className="h-full w-full" />
+  1032→          )}
+  1033→        </ChartCard>
+  1034→
+  1035→        <ChartCard title="Top Source IPs">
+  1036→          {na ? (
+  1037→            <BarList items={na.topSourceIps} />
+  1038→          ) : (
+  1039→            <Skeleton className="h-full w-full" />
+  1040→          )}
+  1041→        </ChartCard>
+  1042→
+  1043→        <ChartCard title="Top Destination Ports">
+  1044→          {na ? (
+  1045→            <BarList items={na.topDestPorts} format={(k) => `:${k}`} />
+  1046→          ) : (
+  1047→            <Skeleton className="h-full w-full" />
+  1048→          )}
+  1049→        </ChartCard>
+  1050→
+  1051→        <ChartCard title="Recent Connections">
+  1052→          {na ? (
+  1053→            <RecentConnections items={na.recentConnections} />
+  1054→          ) : (
+  1055→            <Skeleton className="h-full w-full" />
+  1056→          )}
+  1057→        </ChartCard>
+  1058→      </div>
+  1059→    </Panel>
+  1060→  );
+  1061→}
+  1062→
+  1063→// ============================================================
+  1064→// Live Alerts
+  1065→// ============================================================
+  1066→
+  1067→function LiveAlerts() {
+  1068→  const alerts = useAppStore((s) => s.alerts);
+  1069→
+  1070→  const capped = useMemo(() => alerts.slice(0, 100), [alerts]);
+  1071→
+  1072→  const counts = useMemo(() => {
+  1073→    const c: Record<Severity, number> = {
+  1074→      critical: 0,
+  1075→      high: 0,
+  1076→      medium: 0,
+  1077→      low: 0,
+  1078→      info: 0,
+  1079→    };
+  1080→    for (const a of alerts) c[a.severity]++;
+  1081→    return c;
+  1082→  }, [alerts]);
+  1083→
+  1084→  return (
+  1085→    <Panel
+  1086→      title="Live Alerts"
+  1087→      icon={<AlertTriangle className="h-4 w-4" />}
+  1088→      className="h-full"
+  1089→      bodyClassName="flex min-h-0 flex-col"
+  1090→      actions={
+  1091→        <div className="flex items-center gap-1.5">
+  1092→          {(["critical", "high", "medium", "low"] as Severity[]).map((s) => (
+  1093→            <span
+  1094→              key={s}
+  1095→              className="rounded-sm border px-1.5 py-0.5 font-mono-data text-[10px] font-bold uppercase"
+  1096→              style={{
+  1097→                color: severityColor(s),
+  1098→                borderColor: `color-mix(in oklch, ${severityColor(s)} 40%, transparent)`,
+  1099→                backgroundColor: `color-mix(in oklch, ${severityColor(s)} 12%, transparent)`,
+  1100→              }}
+  1101→              title={`${s} alerts`}
+  1102→            >
+  1103→              {counts[s]}
+  1104→            </span>
+  1105→          ))}
+  1106→        </div>
+  1107→      }
+  1108→    >
+  1109→      <div className="soc-scrollbar max-h-[300px] min-h-0 flex-1 overflow-y-auto p-2">
+  1110→        {capped.length === 0 ? (
+  1111→          <div className="flex min-h-[160px] flex-col items-center justify-center gap-2 py-6 text-muted-foreground">
+  1112→            <Shield className="h-6 w-6 opacity-40" />
+  1113→            <span className="max-w-[220px] text-center font-mono-data text-[10px] uppercase tracking-wider">
+  1114→              No alerts. Detection rules are monitoring telemetry…
+  1115→            </span>
+  1116→          </div>
+  1117→        ) : (
+  1118→          <div className="flex flex-col gap-2">
+  1119→            {capped.map((a) => (
+  1120→              <div
+  1121→                key={a.id}
+  1122→                className="relative overflow-hidden rounded-md border border-border/40 bg-card/40 p-2.5 pl-3 transition-colors hover:bg-accent/30"
+  1123→              >
+  1124→                <div
+  1125→                  className="absolute left-0 top-0 h-full w-0.5"
+  1126→                  style={{ backgroundColor: severityColor(a.severity) }}
+  1127→                />
+  1128→                <div className="flex items-center gap-2">
+  1129→                  <SeverityBadge severity={a.severity} size="sm" />
+  1130→                  <span className="flex-1 truncate font-mono-data text-xs font-bold" title={a.ruleName}>
+  1131→                    {a.ruleName}
+  1132→                  </span>
+  1133→                  <span className="shrink-0 font-mono-data text-[9px] text-muted-foreground">
+  1134→                    {a.alertId}
+  1135→                  </span>
+  1136→                </div>
+  1137→                <div className="mt-1 text-[11px] leading-snug text-foreground/80">
+  1138→                  {a.message}
+  1139→                </div>
+  1140→                <div className="mt-1.5 flex items-center gap-3 text-[10px] text-muted-foreground">
+  1141→                  <span className="font-mono-data">CONF {a.confidence}%</span>
+  1142→                  {a.recommendedAction && (
+  1143→                    <span className="truncate" title={a.recommendedAction}>
+  1144→                      → {a.recommendedAction}
+  1145→                    </span>
+  1146→                  )}
+  1147→                  <span className="ml-auto whitespace-nowrap font-mono-data">
+  1148→                    {formatTime(a.timestamp)}
+  1149→                  </span>
+  1150→                </div>
+  1151→              </div>
+  1152→            ))}
+  1153→          </div>
+  1154→        )}
+  1155→      </div>
+  1156→    </Panel>
+  1157→  );
+  1158→}
+  1159→
+  1160→// ============================================================
+  1161→// Main View
+  1162→// ============================================================
+  1163→
+  1164→export function LiveMonitorView() {
+  1165→  return (
+  1166→    <div className="flex h-full flex-col overflow-hidden">
+  1167→      <TargetControlBar />
+  1168→      <div className="soc-scrollbar flex-1 overflow-y-auto overflow-x-hidden p-3">
+  1169→        <div className="flex flex-col gap-3">
+  1170→          <AssessmentPanel />
+  1171→          <KpiGrid />
+  1172→          <div className="grid grid-cols-1 gap-3 lg:grid-cols-12">
+  1173→            <div className="min-h-0 lg:col-span-8">
+  1174→              <LiveSecurityLog />
+  1175→            </div>
+  1176→            <div className="min-h-0 lg:col-span-4">
+  1177→              <LiveAlerts />
+  1178→            </div>
+  1179→          </div>
+  1180→          <NetworkActivityPanel />
+  1181→        </div>
+  1182→      </div>
+  1183→    </div>
+  1184→  );
+  1185→}
+  1186→

@@ -20,6 +20,9 @@ import {
   Gauge,
   Server,
   Info,
+  CheckCircle,
+  RotateCcw,
+  Eye,
   LucideIcon,
 } from "lucide-react";
 import {
@@ -38,6 +41,8 @@ import { SeverityBadge } from "@/components/soc/severity-badge";
 import { StatusDot } from "@/components/soc/status-dot";
 import { AuthWarning } from "@/components/soc/auth-warning";
 import { EventDetailDrawer } from "@/components/soc/event-detail-drawer";
+import { ExportMenu } from "@/components/soc/export-menu";
+import { ThreatMapPanel } from "@/components/soc/threat-map-panel";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import {
@@ -59,6 +64,7 @@ import { severityColor } from "@/lib/constants";
 import type {
   Severity,
   SecurityEvent,
+  SecurityAlert,
   ServiceInfo,
   TopItem,
   ProtocolDistribution,
@@ -453,7 +459,7 @@ function TargetControlBar() {
   };
 
   return (
-    <div className="flex shrink-0 flex-wrap items-center gap-2 border-b border-border/60 bg-card/40 px-3 py-2 backdrop-blur-md">
+    <div className={`flex shrink-0 flex-wrap items-center gap-2 border-b bg-card/40 px-3 py-2 backdrop-blur-md ${isActive ? "border-[color:var(--soc-low)]/40 active-border" : "border-border/60"}`}>
       <div className="flex items-center gap-2">
         <span className="font-mono-data text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
           Target
@@ -797,6 +803,11 @@ function LiveSecurityLog() {
             <Trash2 className="h-3 w-3" />
             Clear
           </Button>
+          <ExportMenu
+            events={events.slice(0, 500)}
+            targetLabel={useAppStore.getState().targetAddress || "live"}
+            size="sm"
+          />
         </>
       }
     >
@@ -898,7 +909,7 @@ function LiveSecurityLog() {
                   <tr
                     key={e.id}
                     onClick={() => handleEventClick(e)}
-                    className="cursor-pointer border-b border-border/20 transition-colors hover:bg-accent/30"
+                    className="cursor-pointer border-b border-border/20 transition-colors hover:bg-accent/30 animate-fade-in-up"
                   >
                     <td className="whitespace-nowrap px-2 py-1.5 font-mono-data text-muted-foreground">
                       {formatTime(e.timestamp)}
@@ -1064,12 +1075,204 @@ function NetworkActivityPanel() {
 // Live Alerts
 // ============================================================
 
+type AlertStatusFilter = "all" | "active" | "acknowledged" | "resolved";
+type AlertStatus = "active" | "acknowledged" | "resolved";
+
+const ALERT_STATUS_FILTERS: Array<{ key: AlertStatusFilter; label: string }> = [
+  { key: "all", label: "All" },
+  { key: "active", label: "Active" },
+  { key: "acknowledged", label: "Acknowledged" },
+  { key: "resolved", label: "Resolved" },
+];
+
+function alertAccentColor(alert: SecurityAlert): string {
+  if (alert.status === "resolved") return "var(--soc-success)";
+  if (alert.status === "acknowledged") return "var(--soc-medium)";
+  return severityColor(alert.severity);
+}
+
+function AlertStatusBadge({ status }: { status: string }) {
+  if (status === "acknowledged") {
+    return (
+      <span
+        className="inline-flex items-center gap-1 rounded-sm border px-1.5 py-0.5 font-mono-data text-[9px] font-bold uppercase tracking-wider"
+        style={{
+          color: "var(--soc-medium)",
+          borderColor: "color-mix(in oklch, var(--soc-medium) 40%, transparent)",
+          backgroundColor: "color-mix(in oklch, var(--soc-medium) 12%, transparent)",
+        }}
+      >
+        <Eye className="h-2.5 w-2.5" />
+        ACK
+      </span>
+    );
+  }
+  if (status === "resolved") {
+    return (
+      <span
+        className="inline-flex items-center gap-1 rounded-sm border px-1.5 py-0.5 font-mono-data text-[9px] font-bold uppercase tracking-wider"
+        style={{
+          color: "var(--soc-success)",
+          borderColor: "color-mix(in oklch, var(--soc-success) 40%, transparent)",
+          backgroundColor: "color-mix(in oklch, var(--soc-success) 12%, transparent)",
+        }}
+      >
+        <CheckCircle className="h-2.5 w-2.5" />
+        Resolved
+      </span>
+    );
+  }
+  return null;
+}
+
+function AlertActionButtons({
+  alert,
+  sessionId,
+  onUpdated,
+}: {
+  alert: SecurityAlert;
+  sessionId: string | null;
+  onUpdated: (alertId: string, status: AlertStatus) => void;
+}) {
+  const [busy, setBusy] = useState(false);
+
+  const handleUpdate = async (newStatus: AlertStatus) => {
+    if (!sessionId || busy) return;
+    setBusy(true);
+    try {
+      await api.updateAlertStatus(sessionId, alert.alertId, newStatus);
+      onUpdated(alert.alertId, newStatus);
+      const verb =
+        newStatus === "acknowledged"
+          ? "acknowledged"
+          : newStatus === "resolved"
+            ? "resolved"
+            : "reopened";
+      toast.success(`Alert ${verb}.`, {
+        description: alert.ruleName,
+      });
+    } catch (err) {
+      const e = err as Error & { status?: number };
+      const msg = e.message || "Unable to update alert status.";
+      if (!e.status) {
+        toast.error("Unable to connect to monitoring service.", {
+          description: "Please check that the monitor service is running.",
+        });
+      } else if (e.status === 404) {
+        toast.error("Alert not found.", {
+          description: "It may have been purged from the live session.",
+        });
+      } else {
+        toast.error(msg);
+      }
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const btnCls =
+    "inline-flex items-center gap-1 rounded-sm border px-1.5 py-0.5 font-mono-data text-[9px] font-bold uppercase tracking-wider transition-colors disabled:opacity-50 disabled:cursor-not-allowed";
+
+  if (alert.status === "active") {
+    return (
+      <div className="flex shrink-0 items-center gap-1">
+        <button
+          type="button"
+          disabled={busy}
+          onClick={() => handleUpdate("acknowledged")}
+          className={cn(btnCls, "hover:bg-[color:var(--soc-medium)]/15")}
+          style={{
+            color: "var(--soc-medium)",
+            borderColor: "color-mix(in oklch, var(--soc-medium) 40%, transparent)",
+          }}
+          title="Acknowledge this alert"
+        >
+          <Eye className="h-2.5 w-2.5" />
+          Ack
+        </button>
+        <button
+          type="button"
+          disabled={busy}
+          onClick={() => handleUpdate("resolved")}
+          className={cn(btnCls, "hover:bg-[color:var(--soc-success)]/15")}
+          style={{
+            color: "var(--soc-success)",
+            borderColor: "color-mix(in oklch, var(--soc-success) 40%, transparent)",
+          }}
+          title="Mark this alert as resolved"
+        >
+          <CheckCircle className="h-2.5 w-2.5" />
+          Resolve
+        </button>
+      </div>
+    );
+  }
+
+  if (alert.status === "acknowledged") {
+    return (
+      <div className="flex shrink-0 items-center gap-1">
+        <button
+          type="button"
+          disabled={busy}
+          onClick={() => handleUpdate("resolved")}
+          className={cn(btnCls, "hover:bg-[color:var(--soc-success)]/15")}
+          style={{
+            color: "var(--soc-success)",
+            borderColor: "color-mix(in oklch, var(--soc-success) 40%, transparent)",
+          }}
+          title="Mark this alert as resolved"
+        >
+          <CheckCircle className="h-2.5 w-2.5" />
+          Resolve
+        </button>
+        <button
+          type="button"
+          disabled={busy}
+          onClick={() => handleUpdate("active")}
+          className={cn(btnCls, "text-muted-foreground hover:text-foreground")}
+          title="Reopen this alert"
+        >
+          <RotateCcw className="h-2.5 w-2.5" />
+          Reopen
+        </button>
+      </div>
+    );
+  }
+
+  // resolved
+  return (
+    <div className="flex shrink-0 items-center gap-1">
+      <button
+        type="button"
+        disabled={busy}
+        onClick={() => handleUpdate("active")}
+        className={cn(btnCls, "text-muted-foreground hover:text-foreground")}
+        title="Reopen this alert"
+      >
+        <RotateCcw className="h-2.5 w-2.5" />
+        Reopen
+      </button>
+    </div>
+  );
+}
+
 function LiveAlerts() {
   const alerts = useAppStore((s) => s.alerts);
+  const sessionId = useAppStore((s) => s.sessionId);
+  const updateAlertStatus = useAppStore((s) => s.updateAlertStatus);
 
-  const capped = useMemo(() => alerts.slice(0, 100), [alerts]);
+  const [statusFilter, setStatusFilter] = useState<AlertStatusFilter>("all");
 
-  const counts = useMemo(() => {
+  const filtered = useMemo(() => {
+    const list =
+      statusFilter === "all"
+        ? alerts
+        : alerts.filter((a) => a.status === statusFilter);
+    return list.slice(0, 100);
+  }, [alerts, statusFilter]);
+
+  // Open (active) counts — what the SOC operator still needs to triage.
+  const openCounts = useMemo(() => {
     const c: Record<Severity, number> = {
       critical: 0,
       high: 0,
@@ -1077,8 +1280,33 @@ function LiveAlerts() {
       low: 0,
       info: 0,
     };
-    for (const a of alerts) c[a.severity]++;
+    for (const a of alerts) {
+      if (a.status === "active") c[a.severity]++;
+    }
     return c;
+  }, [alerts]);
+
+  // Total counts (all statuses) — shown as small text below the open badges.
+  const totalCounts = useMemo(() => {
+    const c: Record<Severity, number> = {
+      critical: 0,
+      high: 0,
+      medium: 0,
+      low: 0,
+      info: 0,
+    };
+    let total = 0;
+    let active = 0;
+    let ack = 0;
+    let resolved = 0;
+    for (const a of alerts) {
+      c[a.severity]++;
+      total++;
+      if (a.status === "active") active++;
+      else if (a.status === "acknowledged") ack++;
+      else if (a.status === "resolved") resolved++;
+    }
+    return { c, total, active, ack, resolved };
   }, [alerts]);
 
   return (
@@ -1098,58 +1326,145 @@ function LiveAlerts() {
                 borderColor: `color-mix(in oklch, ${severityColor(s)} 40%, transparent)`,
                 backgroundColor: `color-mix(in oklch, ${severityColor(s)} 12%, transparent)`,
               }}
-              title={`${s} alerts`}
+              title={`${openCounts[s]} open ${s} alerts`}
             >
-              {counts[s]}
+              {openCounts[s]}
             </span>
           ))}
+          <ExportMenu
+            alerts={alerts.slice(0, 200)}
+            targetLabel={useAppStore.getState().targetAddress || "live"}
+            size="sm"
+          />
         </div>
       }
     >
+      {/* Status filter row + total counts */}
+      <div className="flex flex-wrap items-center gap-2 border-b border-border/40 px-3 py-2">
+        <div className="flex flex-wrap items-center gap-1">
+          {ALERT_STATUS_FILTERS.map((f) => {
+            const active = statusFilter === f.key;
+            let color: string | undefined;
+            if (f.key === "active") color = "var(--soc-critical)";
+            else if (f.key === "acknowledged") color = "var(--soc-medium)";
+            else if (f.key === "resolved") color = "var(--soc-success)";
+            return (
+              <button
+                key={f.key}
+                type="button"
+                onClick={() => setStatusFilter(f.key)}
+                className={cn(
+                  "rounded-sm border px-1.5 py-0.5 font-mono-data text-[10px] uppercase tracking-wider transition-colors",
+                  active
+                    ? "text-foreground"
+                    : "border-transparent text-muted-foreground hover:text-foreground",
+                )}
+                style={
+                  active && color
+                    ? {
+                        color,
+                        borderColor: `color-mix(in oklch, ${color} 40%, transparent)`,
+                        backgroundColor: `color-mix(in oklch, ${color} 12%, transparent)`,
+                      }
+                    : active
+                      ? { borderColor: "var(--border)", backgroundColor: "var(--accent)" }
+                      : undefined
+                }
+              >
+                {f.label}
+              </button>
+            );
+          })}
+        </div>
+        <div className="ml-auto flex items-center gap-2 font-mono-data text-[9px] uppercase tracking-wider text-muted-foreground">
+          <span title="Open (active) alerts">
+            <span className="text-[color:var(--soc-critical)]">{totalCounts.active}</span> open
+          </span>
+          <span className="text-muted-foreground/40">·</span>
+          <span title="Acknowledged alerts">
+            <span className="text-[color:var(--soc-medium)]">{totalCounts.ack}</span> ack
+          </span>
+          <span className="text-muted-foreground/40">·</span>
+          <span title="Resolved alerts">
+            <span className="text-[color:var(--soc-success)]">{totalCounts.resolved}</span> resolved
+          </span>
+          <span className="text-muted-foreground/40">·</span>
+          <span title="Total alerts in this session">{totalCounts.total} total</span>
+        </div>
+      </div>
+
       <div className="soc-scrollbar max-h-[300px] min-h-0 flex-1 overflow-y-auto p-2">
-        {capped.length === 0 ? (
+        {filtered.length === 0 ? (
           <div className="flex min-h-[160px] flex-col items-center justify-center gap-2 py-6 text-muted-foreground">
             <Shield className="h-6 w-6 opacity-40" />
             <span className="max-w-[220px] text-center font-mono-data text-[10px] uppercase tracking-wider">
-              No alerts. Detection rules are monitoring telemetry…
+              {alerts.length === 0
+                ? "No alerts. Detection rules are monitoring telemetry…"
+                : "No alerts match this filter."}
             </span>
           </div>
         ) : (
           <div className="flex flex-col gap-2">
-            {capped.map((a) => (
-              <div
-                key={a.id}
-                className="relative overflow-hidden rounded-md border border-border/40 bg-card/40 p-2.5 pl-3 transition-colors hover:bg-accent/30"
-              >
+            {filtered.map((a) => {
+              const accent = alertAccentColor(a);
+              const opacityCls =
+                a.status === "resolved"
+                  ? "opacity-50"
+                  : a.status === "acknowledged"
+                    ? "opacity-80"
+                    : "opacity-100";
+              return (
                 <div
-                  className="absolute left-0 top-0 h-full w-0.5"
-                  style={{ backgroundColor: severityColor(a.severity) }}
-                />
-                <div className="flex items-center gap-2">
-                  <SeverityBadge severity={a.severity} size="sm" />
-                  <span className="flex-1 truncate font-mono-data text-xs font-bold" title={a.ruleName}>
-                    {a.ruleName}
-                  </span>
-                  <span className="shrink-0 font-mono-data text-[9px] text-muted-foreground">
-                    {a.alertId}
-                  </span>
-                </div>
-                <div className="mt-1 text-[11px] leading-snug text-foreground/80">
-                  {a.message}
-                </div>
-                <div className="mt-1.5 flex items-center gap-3 text-[10px] text-muted-foreground">
-                  <span className="font-mono-data">CONF {a.confidence}%</span>
-                  {a.recommendedAction && (
-                    <span className="truncate" title={a.recommendedAction}>
-                      → {a.recommendedAction}
-                    </span>
+                  key={a.id}
+                  className={cn(
+                    "relative overflow-hidden rounded-md border border-border/40 bg-card/40 p-2.5 pl-3 transition-all hover:bg-accent/30",
+                    opacityCls,
                   )}
-                  <span className="ml-auto whitespace-nowrap font-mono-data">
-                    {formatTime(a.timestamp)}
-                  </span>
+                >
+                  <div
+                    className="absolute left-0 top-0 h-full w-0.5"
+                    style={{ backgroundColor: accent }}
+                  />
+                  <div className="flex items-center gap-2">
+                    <SeverityBadge severity={a.severity} size="sm" />
+                    <AlertStatusBadge status={a.status} />
+                    <span
+                      className={cn(
+                        "flex-1 truncate font-mono-data text-xs font-bold",
+                        a.status === "resolved" && "line-through decoration-muted-foreground/60",
+                      )}
+                      title={a.ruleName}
+                    >
+                      {a.ruleName}
+                    </span>
+                    <span className="shrink-0 font-mono-data text-[9px] text-muted-foreground">
+                      {a.alertId}
+                    </span>
+                  </div>
+                  <div className="mt-1 text-[11px] leading-snug text-foreground/80">
+                    {a.message}
+                  </div>
+                  <div className="mt-1.5 flex items-center gap-3 text-[10px] text-muted-foreground">
+                    <span className="font-mono-data">CONF {a.confidence}%</span>
+                    {a.recommendedAction && (
+                      <span className="truncate" title={a.recommendedAction}>
+                        → {a.recommendedAction}
+                      </span>
+                    )}
+                    <span className="ml-auto whitespace-nowrap font-mono-data">
+                      {formatTime(a.timestamp)}
+                    </span>
+                  </div>
+                  <div className="mt-1.5 flex items-center justify-end gap-2 border-t border-border/30 pt-1.5">
+                    <AlertActionButtons
+                      alert={a}
+                      sessionId={sessionId}
+                      onUpdated={(alertId, status) => updateAlertStatus(alertId, status)}
+                    />
+                  </div>
                 </div>
-              </div>
-            ))}
+              );
+            })}
           </div>
         )}
       </div>
@@ -1160,6 +1475,16 @@ function LiveAlerts() {
 // ============================================================
 // Main View
 // ============================================================
+
+function ThreatMapSection() {
+  const events = useAppStore((s) => s.events);
+  const targetAddress = useAppStore((s) => s.targetAddress);
+  const status = useAppStore((s) => s.status);
+  const active = status === "monitoring" || status === "scanning" || status === "initializing";
+  return (
+    <ThreatMapPanel events={events} targetAddress={targetAddress || "—"} active={active} />
+  );
+}
 
 export function LiveMonitorView() {
   return (
@@ -1177,7 +1502,10 @@ export function LiveMonitorView() {
               <LiveAlerts />
             </div>
           </div>
-          <NetworkActivityPanel />
+          <div className="grid grid-cols-1 gap-3 xl:grid-cols-2">
+            <NetworkActivityPanel />
+            <ThreatMapSection />
+          </div>
         </div>
       </div>
     </div>

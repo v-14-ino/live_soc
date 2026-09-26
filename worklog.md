@@ -809,3 +809,246 @@ Enhanced visual polish across the platform:
 3. **Add CSV/JSON export** for events and alerts from the History detail dialog.
 4. **Add a "Compare Sessions" feature** — diff two historical sessions to see how the target's security posture changed.
 5. **Add real telemetry adapter scaffolding** — even if non-functional in the sandbox, provide the interface and configuration for connecting real nmap/journald/nginx-log/iptables/suricata adapters.
+
+---
+Task ID: FEATURE-ACK
+Agent: orchestrator (main)
+Task: Implement the full alert acknowledgement workflow (active → acknowledged → resolved → active) for both live and historical sessions, with status persisting to the DB and propagating to all connected WS clients.
+
+## Architecture
+
+The status update flow is:
+
+```
+Browser (Ack/Resolve button click)
+  → api.updateAlertStatus(sessionId, alertId, status)
+  → PATCH /api/monitoring/<sessionId>/alerts  (Next.js route, body { alertId, status })
+  → PATCH http://127.0.0.1:3003/internal/alerts/<alertId>  (monitor-service, body { sessionId, status })
+       │
+       ├─ If session is still ACTIVE in sessionManager:
+       │    sessionManager.updateAlertStatus(sessionId, alertId, status)
+       │      1. Update active.recentAlerts[idx].status (in-memory)
+       │      2. db.alert.update({ where: { alertId }, data: { status } })  (DB persist)
+       │      3. auditLog("info", "alert", "Alert <alertId> status → <status>", {...})
+       │      4. broadcastLocal(active, { type: "alert", alert: updatedAlert })  (WS broadcast)
+       │    → returns { ok: true, alertId, status } or 404 if alert not in recentAlerts
+       │
+       └─ If session is NOT active (historical):
+            db.alert.update({ where: { alertId }, data: { status } })  (DB-only)
+            auditLog("info", "alert", "Historical alert <alertId> status → <status>", {...})
+            → returns { ok: true, alertId, status } or 404 if Prisma update fails (record not found)
+```
+
+The WS broadcast reaches all subscribed browser clients. The `use-monitor-ws` hook now uses `upsertAlert` (instead of `pushAlert`) for incoming `alert` messages, so a status-update broadcast replaces the existing alert entry instead of being added as a duplicate. The operator who clicked the button also sees the update via this round-trip (the local `updateAlertStatus` store action is fired optimistically on success).
+
+## Files modified (8)
+
+### Backend
+
+1. **src/lib/monitoring/session.ts** — added `sessionManager.updateAlertStatus(sessionId, alertId, status)`:
+   - Looks up the active session + finds the alert in `active.recentAlerts` by `alertId`.
+   - Returns `null` if session/alert not found.
+   - Replaces the alert in the in-memory list with a spread-copy having the new `status`.
+   - Persists via `db.alert.update({ where: { alertId }, data: { status } })` — wrapped in try/catch; on failure logs an `auditLog("error", ...)` entry but still broadcasts the in-memory change so the UI stays responsive.
+   - Audit-logs the status change at info level with `{ sessionId, alertId, status, ruleId, severity }`.
+   - Broadcasts `{ type: "alert", alert: updatedAlert }` to all subscribers via `broadcastLocal`.
+   - Returns the updated `SecurityAlert` on success.
+
+2. **mini-services/monitor-service/index.ts** — added `PATCH /internal/alerts/:alertId` to `handleInternalRoute`:
+   - Placed BEFORE the existing "active session required" 404 guard (since the third path segment for this route is the `alertId`, not a `sessionId`).
+   - Reads JSON body `{ sessionId, status }`, validates `status ∈ {acknowledged, resolved, active}`.
+   - If `sessionManager.getActive(sessionId)` returns the active session → calls `sessionManager.updateAlertStatus(...)` (in-memory + DB + broadcast). 404 if alert not found in the active list.
+   - If the session is not active → DB-only fallback: `db.alert.update({ where: { alertId }, data: { status } })`. Audit-logs the historical update. Returns 404 (`ALERT_NOT_FOUND`) if the Prisma update fails (record not found).
+   - Returns `{ ok: true, alertId, status }` on success.
+   - The `db` import was already present at the top of the file (`@/lib/db`).
+
+3. **src/app/api/monitoring/[sessionId]/alerts/route.ts** — added `PATCH` handler (kept the existing `GET`):
+   - Reads JSON body `{ alertId, status }`, validates both (alertId non-empty; status ∈ {acknowledged, resolved, active}).
+   - Proxies via `monitorFetch` to `PATCH /internal/alerts/<alertId>` with body `{ sessionId, status }`.
+   - Maps `MonitorServiceError` codes to user-friendly responses:
+     - `NOT_FOUND` → 404 `"Alert not found."`
+     - `UNREACHABLE` → 503 `"Unable to connect to monitoring service."`
+     - `BAD_REQUEST` → 400 `"Invalid alert status request."`
+     - else → 502 `"Unable to update alert status."`
+   - Uses `withApiHandler` for centralized error handling + audit logging.
+   - Imports `type MonitorServiceError` for instanceof-free code classification.
+
+### Frontend
+
+4. **src/lib/store.ts** — added two new actions to `useAppStore`:
+   - `upsertAlert(a: SecurityAlert)`: if an alert with the same `alertId` exists in `state.alerts`, replace it (in place — preserves order); otherwise unshift to the front (same as `pushAlert`). Respects the `paused` flag like `pushAlert` does. This is what the WS hook now uses so that incoming status-update broadcasts replace rather than duplicate.
+   - `updateAlertStatus(alertId, status)`: pure client-side status update — finds the alert by `alertId` and updates its `status` field in place. Used for the optimistic local update after a successful PATCH.
+
+5. **src/lib/api-client.ts** — added `api.updateAlertStatus(sessionId, alertId, status)`:
+   - `PATCH /api/monitoring/<sessionId>/alerts` with body `{ alertId, status }`.
+   - Returns `{ ok, alertId, status }`.
+   - Reuses the existing `http<T>` helper which surfaces HTTP errors as `Error & { status, code? }`.
+
+6. **src/hooks/use-monitor-ws.ts** — changed the `case "alert":` handler from `s.pushAlert(msg.alert)` to `s.upsertAlert(msg.alert)`:
+   - An incoming `alert` WS message may now be either a brand-new alert (created by the detection engine) OR a status-update broadcast (created by `sessionManager.updateAlertStatus`).
+   - `upsertAlert` handles both cases: new alerts are prepended, status updates replace the existing entry in place.
+   - This means an operator who clicks "Ack" on browser A immediately sees the ACK badge on browser B too (via the WS broadcast round-trip).
+
+7. **src/components/views/live-monitor-view.tsx** — rewrote the `LiveAlerts` component and added supporting subcomponents:
+   - New imports: `CheckCircle`, `RotateCcw`, `Eye` (lucide-react), `SecurityAlert` (types).
+   - New `AlertStatusBadge` component: shows an "ACK" pill (amber, Eye icon) for acknowledged alerts and a "Resolved" pill (green, CheckCircle icon) for resolved alerts. Returns `null` for active alerts (the severity badge already conveys status).
+   - New `AlertActionButtons` component: renders different buttons based on current status:
+     - active → "Ack" (amber) + "Resolve" (green)
+     - acknowledged → "Resolve" (green) + "Reopen" (muted)
+     - resolved → "Reopen" (muted)
+   - Each button click calls `api.updateAlertStatus(sessionId, alertId, newStatus)`. On success: calls the parent's `onUpdated` callback (which dispatches `useAppStore.updateAlertStatus`) + shows a `toast.success` with the verb ("acknowledged" / "resolved" / "reopened") and the rule name as description. On error: friendly toasts — 503 for unreachable service, 404 for not-found alert, generic for other errors. Has a per-button `busy` state to prevent double-clicks.
+   - New `alertAccentColor(alert)` helper: returns `var(--soc-success)` for resolved, `var(--soc-medium)` (amber) for acknowledged, otherwise the severity color.
+   - Rewrote `LiveAlerts`:
+     - Added a filter row at the top: `All / Active / Acknowledged / Resolved` toggle buttons. Color-coded when active (critical-red for Active, amber for Acknowledged, green for Resolved, neutral for All).
+     - The top-right count badges (CRITICAL/HIGH/MEDIUM/LOW) now count ONLY ACTIVE alerts (`a.status === "active"`), labeled "X open Y alerts" — this is the "open alerts" / triage queue count.
+     - Added a small mono-data row showing total counts: `<N> open · <N> ack · <N> resolved · <N> total` — gives the operator a complete picture at a glance.
+     - Each alert card now applies opacity based on status: `opacity-100` (active), `opacity-80` (acknowledged), `opacity-50` (resolved). The left accent bar uses `alertAccentColor`. The rule name gets `line-through decoration-muted-foreground/60` when resolved. The `AlertStatusBadge` is shown next to the severity badge.
+     - The action buttons row is at the bottom of each card, separated by a `border-t border-border/30 pt-1.5`.
+     - The `sessionId` comes from `useAppStore(s => s.sessionId)`.
+     - The `updateAlertStatus` store action is called via `onUpdated` callback for the optimistic local update.
+   - The empty-state message now distinguishes "no alerts yet" vs "no alerts match this filter".
+
+8. **src/components/views/history-view.tsx** — added the same ack/resolve UI to the Alerts tab in the historical session detail dialog:
+   - New imports: `CheckCircle`, `RotateCcw` (Eye was already imported), `useCallback`.
+   - Added `AlertStatusBadge`, `AlertActionButtons`, `alertAccentColor` (same implementations as the live view, adapted to the historical card layout).
+   - Rewrote `AlertCard` to take `sessionId` and `onUpdated` props. Applies the same opacity/accent/badge/strikethrough treatment as the live cards. Action buttons row at the bottom.
+   - Rewrote `AlertsTab` to maintain a `localAlerts` state (synced from the `alerts` prop via `useEffect`), so when an alert's status changes via `onUpdated`, the local list updates immediately without needing a refetch. Added a counts row at the top showing `open · ack · resolved`.
+   - Updated the call site `<AlertsTab alerts={detail.alerts} sessionId={detail.session.id} />` to pass the historical session's id.
+
+## Verification results
+
+### Compile + Lint
+- `bun run lint` → **0 errors, 0 warnings** (exit 0).
+- `tail /home/z/my-project/dev.log` → only `✓ Compiled in Nms` lines, no compile errors. The PATCH route compiled cleanly on first request: `PATCH /api/monitoring/<sessionId>/alerts 200 in 109ms (compile: 70ms, render: 38ms)`.
+
+### curl smoke test (before agent-browser)
+- `PATCH /api/monitoring/fake-session-id/alerts` body `{alertId:"ALR-FAKE-00001", status:"acknowledged"}` → `404 {"error":"Alert not found."}` (correct: session not active, DB fallback Prisma update fails because no such alertId).
+- Same with `status:"bogus"` → `400 {"error":"Invalid 'status'. Must be one of: acknowledged, resolved, active."}` (correct validation).
+- Direct `PATCH http://127.0.0.1:3003/internal/alerts/ALR-FAKE-00001` → `404 {"error":"Alert not found: ALR-FAKE-00001","code":"ALERT_NOT_FOUND"}` (correct monitor-service response).
+
+### Agent-browser E2E (via http://localhost:81/)
+
+Screenshots saved under `/home/z/my-project/agent-ctx/`:
+- `feature-ack-1-initial.png` — initial load, before monitoring.
+- `feature-ack-2-monitoring.png` — monitoring started, telemetry flowing.
+- `feature-ack-3-alerts.png` — alerts appearing (16 active).
+- `feature-ack-4-after-ack.png` — first Ack clicked (during active streaming).
+- `feature-ack-5-acknowledged-filter.png` — Acknowledged filter active, shows the 1 acked alert with ACK badge + Resolve + Reopen buttons.
+- `feature-ack-6-resolved.png` — Resolve clicked on the acked alert; summary shows "1 resolved".
+- `feature-ack-7-resolved-filter.png` — Resolved filter active, shows the 1 resolved alert with "✓ Resolved" badge + Reopen button + strikethrough rule name + opacity-50.
+- `feature-ack-8-reopened.png` — Reopen clicked; alert back to active (opacity-100, severity accent, Ack+Resolve buttons).
+- `feature-ack-9-stopped.png` — monitoring stopped, session saved to history.
+- `feature-ack-10-history.png` — History view, session listed with 16 alerts.
+- `feature-ack-11-history-detail.png` — Historical session detail dialog, Overview tab.
+- `feature-ack-12-history-alerts.png` — Alerts tab in history detail, 16 alert cards each with Ack + Resolve buttons.
+- `feature-ack-13-history-acked.png` — Ack clicked on historical alert → 15 Ack buttons, 16 Resolve, 1 Reopen, 1 ACK badge (DB-only fallback path verified).
+- `feature-ack-14-history-resolved.png` — Resolve clicked on the acked historical alert → 15 Ack, 15 Resolve, 1 Reopen, 1 Resolved badge, 0 ACK badges.
+- `feature-ack-15-final.png` — dialog closed, history view.
+
+DOM verification via `agent-browser eval`:
+- After monitoring start, the 4 new alert filter buttons render: `All / Active / Acknowledged / Resolved` (refs e18-e21 in snapshot).
+- Count badges show OPEN counts only: `0 critical · 1 high · 10 medium · 5 low` (16 total open, matches the 16 alert cards with "Acknowledge this alert" buttons).
+- The total counts row renders: `16 open · 0 ack · 0 resolved · 16 total`.
+- After Ack click (live): `1 ACK badge`, `1 Reopen button`, `1 Resolve button`, `0 Ack buttons` for the acked alert. Summary updates to `… · 1 ack · …`.
+- After Resolve click (live): `1 Resolved badge`, `1 Reopen button`, `0 Resolve/Ack buttons` for the resolved alert. Summary: `… · 1 resolved · …`.
+- After Reopen click (live): summary back to `146 open · 0 ack · 0 resolved · 146 total`, alert card returns to active state with Ack+Resolve buttons.
+- In history detail Alerts tab: 16 alert cards with 16 Ack + 16 Resolve buttons initially. After Ack: 15 Ack / 16 Resolve / 1 Reopen / 1 ACK badge. After Resolve: 15 Ack / 15 Resolve / 1 Reopen / 1 Resolved badge.
+- No `agent-browser errors` reported throughout the test.
+- No unexpected `agent-browser console` errors (only the standard React DevTools + Fast Refresh logs).
+- Dev server log confirms the historical PATCH round-trips: `PATCH /api/monitoring/cmui0o5hk01k7lifbfp4qb0z0/alerts 200 in 109ms` and `65ms` — both succeeded.
+- Monitor-service log confirms the DB fallback path executes when the session is not active (audit-logged as "Historical alert <alertId> status → <status>").
+
+## Caveats for next agents
+- The `pushAlert` store action is kept for backward compatibility but is now only used by code paths that intentionally want to always-prepend (none in the active codebase after this change — `use-monitor-ws.ts` now uses `upsertAlert`). If you add new alert sources, prefer `upsertAlert` to avoid duplicates when an alert with the same `alertId` already exists.
+- The historical alert PATCH goes through the monitor-service even though the session is no longer active. This is intentional: it keeps a single endpoint for both active and historical updates, and the monitor-service is the only process with `db` access in the current architecture (Next.js API routes also have `db`, but routing through the monitor-service means we don't need a second Prisma client connection per request and the audit log entries all flow through the same `monitor-service` / `alert` module). If the monitor-service is down, historical alert updates will return 503 — the operator gets a clear toast. If you want to make historical updates resilient to monitor-service downtime, you could add a DB-only fallback in the Next.js route itself.
+- The alert `status` field in the DB schema is `String @default("active")` (see `prisma/schema.prisma` Alert model). No schema migration was needed — the field already existed.
+- The `totalAlerts` counter in the store (`state.totalAlerts`) is only incremented when a NEW alert is added (via `pushAlert` or `upsertAlert` when the alertId doesn't already exist). Status updates do NOT bump this counter, which is correct — it reflects "total alerts ever raised in this session", not "current list length".
+- The KPI `critical/high/medium/low/info` counts in `computeKpi()` count EVENTS by severity, not ALERTS. The alert count badges in the `LiveAlerts` panel are computed separately from `state.alerts` and only count ACTIVE alerts. These two systems are independent — don't confuse them.
+- The `AlertActionButtons` component has its own local `busy` state, so each card's buttons can be independently disabled while a PATCH is in flight. If the user clicks Ack on card A then immediately clicks Resolve on card B, both PATCHes run concurrently — this is fine because they target different alertIds.
+
+---
+Task ID: REVIEW-2 (cron-triggered webDevReview)
+Agent: orchestrator (main)
+Task: QA testing, alert acknowledgement, CSV/JSON export, threat map visualization, styling polish
+
+## Current Project Status Assessment
+- All 3 services healthy: Next.js (:3000), monitor-service (:3003), Caddy gateway (:81).
+- Full end-to-end flow verified via agent-browser — no console errors, no bugs found in QA.
+- 0 lint errors, 0 warnings.
+- All 6 views functional. Prior round's features (command palette, event drawer, rules dialog, KPI INFO card) all still working.
+
+## Completed Modifications
+
+### 1. New Feature: Alert Acknowledgement Workflow (subagent FEATURE-ACK)
+Full ack/resolve/reopen workflow with backend persistence + WS broadcast:
+- **Backend:** `sessionManager.updateAlertStatus()` in session.ts (in-memory + DB + WS broadcast). New `PATCH /internal/alerts/:alertId` endpoint in monitor-service (handles both active sessions via sessionManager and historical via DB-only fallback). New `PATCH` handler in `/api/monitoring/[sessionId]/alerts/route.ts`.
+- **Frontend:** `upsertAlert` + `updateAlertStatus` store actions. WS hook switched from `pushAlert` to `upsertAlert` (so status-update broadcasts replace rather than duplicate). `LiveAlerts` component in live-monitor-view.tsx rewrote with: Ack/Resolve/Reopen buttons per alert card, status-based dimming (active=100%, ack=80%, resolved=50%), accent bar recoloring, strikethrough on resolved rule names, status filter row (All/Active/Acknowledged/Resolved), open-count badges (only count active alerts), total counts row. History view's AlertsTab also got the same buttons with local state sync.
+- **Verified:** Clicked Ack → "1 ACK" count, ACK badge appeared, button changed to Reopen. Clicked Resolve → "1 RESOLVED", strikethrough, dimmed. Clicked Reopen → back to active. Historical alerts also work (DB-only fallback path).
+
+### 2. New Feature: CSV/JSON Export for Events & Alerts
+- **`src/lib/export-utils.ts`** (new): pure client-side export utilities — `eventsToCsv`, `eventsToJson`, `alertsToCsv`, `alertsToJson`, `exportEventsCsv/Json`, `exportAlertsCsv/Json`, `exportBundleJson`. CSV escaping handles commas/quotes/newlines. Files named `livesoc_events_<target>_<timestamp>.csv`.
+- **`src/components/soc/export-menu.tsx`** (new): reusable dropdown menu with Download/FileJson/FileSpreadsheet icons. Shows Events section + Alerts section with counts. Loading spinner during export. Success/error toasts.
+- **Integrated into:**
+  - LiveMonitor Live Security Log panel header (events export, 500 max)
+  - LiveMonitor Live Alerts panel header (alerts export, 200 max)
+  - History view EventsTab (full event log export)
+  - History view AlertsTab (full alerts export)
+- **Verified:** Export menu opens, shows "EVENTS (55)" with CSV/JSON options. Click triggers browser download + success toast.
+
+### 3. New Feature: Threat Map Visualization
+- **`src/components/soc/threat-map-panel.tsx`** (new): SVG-based network topology radar showing source IPs as nodes arranged in a circle around the center target. Features:
+  - Radar rings + crosshairs background with SOC grid
+  - Source IP nodes positioned deterministically (hash-based stable positions), sized by event count, colored by top severity
+  - Animated connection lines from each source to the target (gradient stroke matching severity)
+  - Animated pulse dots traveling along lines when monitoring is active (SVG `animateMotion`)
+  - Pulsing rings on active source nodes
+  - Target node at center with crosshair + expanding ring animation when active
+  - Source IP labels (top 6) with severity-colored backgrounds
+  - Scanline overlay when monitoring active
+  - Empty state: "Waiting for source activity…"
+  - Legend: Target, Critical/High/Medium/Low source colors, source count + recent count
+  - Caps at 12 source nodes for performance
+- **Integrated** into LiveMonitor as a 2-column grid alongside NetworkActivityPanel (xl:grid-cols-2).
+- **Verified:** Threat Map renders with "THREAT MAP" heading, shows source IPs around the target 192.168.1.100, animated pulses visible when monitoring active.
+
+### 4. Styling Polish: Applied unused utilities
+- **`animate-fade-in-up`** on event log rows — new events cascade in with a subtle fade+slide animation.
+- **`active-border`** on the TargetControlBar — when monitoring is active, the top bar gets an animated gradient border in cyan (the `active-border-shift` keyframe), reinforcing the "live" state visually.
+- These utilities were defined in REVIEW-1/STYLING-1 but not yet applied; now they're integrated.
+
+## Verification Results
+- `bun run lint`: 0 errors, 0 warnings
+- `dev.log`: clean compiles, no errors
+- agent-browser E2E through gateway (:81):
+  - Start monitoring → KPIs live, threat map renders with source nodes + animated pulses ✓
+  - Export menu → opens, shows Events (55) CSV/JSON options, click triggers download + toast ✓
+  - Alert Ack button → "1 ACK" count, badge appears, button changes to Reopen ✓
+  - Alert Resolve → "1 RESOLVED", strikethrough, dimmed ✓
+  - Alert Reopen → back to active ✓
+  - No console errors throughout ✓
+- All services healthy (HTTP 200 across Next.js, monitor-service, gateway)
+
+## Files Modified/Created This Round
+- `src/lib/export-utils.ts` (new) — CSV/JSON export utilities
+- `src/components/soc/export-menu.tsx` (new) — reusable export dropdown
+- `src/components/soc/threat-map-panel.tsx` (new) — SVG threat map visualization
+- `src/components/views/live-monitor-view.tsx` — integrated export menus (Live Security Log + Live Alerts), added ThreatMapSection + ThreatMapPanel, applied animate-fade-in-up on event rows, active-border on TargetControlBar
+- `src/components/views/history-view.tsx` — added ExportMenu to EventsTab + AlertsTab, pass targetLabel
+- `src/lib/monitoring/session.ts` — `sessionManager.updateAlertStatus()` (by subagent)
+- `mini-services/monitor-service/index.ts` — `PATCH /internal/alerts/:alertId` (by subagent)
+- `src/app/api/monitoring/[sessionId]/alerts/route.ts` — PATCH handler (by subagent)
+- `src/lib/store.ts` — `upsertAlert` + `updateAlertStatus` actions (by subagent)
+- `src/lib/api-client.ts` — `updateAlertStatus` method (by subagent)
+- `src/hooks/use-monitor-ws.ts` — switch to `upsertAlert` (by subagent)
+
+## Unresolved Issues / Risks
+- **None critical.** All features working end-to-end.
+- Minor: browser downloads from the export menu go to the browser's default download location (not persisted in the project). This is expected browser behavior.
+- The threat map is SVG-based (no external map library) — it's a topological/radar view, not a geographic map. A true geographic world map would require a GeoIP lookup service + a map tile library (heavyweight); the radar view is more appropriate for a SOC dashboard anyway.
+
+## Priority Recommendations for Next Phase
+1. **Add a "Compare Sessions" feature** — diff two historical sessions to see how the target's security posture changed (event count delta, new source IPs, new scenarios).
+2. **Add real telemetry adapter scaffolding** — provide the interface and configuration for connecting real nmap/journald/nginx-log/iptables/suricata adapters (even if non-functional in the sandbox).
+3. **Add a session timeline scrubber** — in the History detail dialog, add a timeline scrubber that lets you "replay" events chronologically.
+4. **Add alert grouping/deduplication** — group similar alerts (same rule + same source) into a single expandable card to reduce noise during burst attacks.
+5. **Add keyboard shortcuts** — e.g. J/K to navigate events, A to ack selected alert, etc.

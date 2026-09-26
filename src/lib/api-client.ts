@@ -141,6 +141,19 @@ export const api = {
       `/api/monitoring/${encodeURIComponent(sessionId)}/alerts?limit=${limit}`,
     ),
 
+  updateAlertStatus: (
+    sessionId: string,
+    alertId: string,
+    status: "acknowledged" | "resolved" | "active",
+  ) =>
+    http<{ ok: boolean; alertId: string; status: string }>(
+      `/api/monitoring/${encodeURIComponent(sessionId)}/alerts`,
+      {
+        method: "PATCH",
+        body: JSON.stringify({ alertId, status }),
+      },
+    ),
+
   getScenarios: (sessionId: string) =>
     http<{ sessionId: string; offense: OffenseScenario[]; defense: DefenseScenario[] }>(
       `/api/monitoring/${encodeURIComponent(sessionId)}/scenarios`,

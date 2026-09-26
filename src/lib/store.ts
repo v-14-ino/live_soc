@@ -53,6 +53,11 @@ interface MonitorActions {
   setPaused: (p: boolean) => void;
   pushEvent: (e: SecurityEvent) => void;
   pushAlert: (a: SecurityAlert) => void;
+  upsertAlert: (a: SecurityAlert) => void;
+  updateAlertStatus: (
+    alertId: string,
+    status: "acknowledged" | "resolved" | "active",
+  ) => void;
   setKpi: (k: KpiStats) => void;
   setNetworkActivity: (n: NetworkActivityStats) => void;
   upsertOffenseScenario: (s: OffenseScenario) => void;
@@ -165,6 +170,31 @@ export const useAppStore = create<AppState>((set, get) => ({
       return { alerts, totalAlerts: state.totalAlerts + 1 };
     });
   },
+
+  upsertAlert: (a) => {
+    if (get().paused) return;
+    set((state) => {
+      const idx = state.alerts.findIndex((x) => x.alertId === a.alertId);
+      if (idx >= 0) {
+        // Replace existing alert (status update or refreshed payload).
+        const next = [...state.alerts];
+        next[idx] = a;
+        return { alerts: next };
+      }
+      // New alert — unshift to front (same as pushAlert).
+      const alerts = [a, ...state.alerts].slice(0, MAX_LIVE_ALERTS);
+      return { alerts, totalAlerts: state.totalAlerts + 1 };
+    });
+  },
+
+  updateAlertStatus: (alertId, status) =>
+    set((state) => {
+      const idx = state.alerts.findIndex((x) => x.alertId === alertId);
+      if (idx < 0) return {};
+      const next = [...state.alerts];
+      next[idx] = { ...next[idx], status };
+      return { alerts: next };
+    }),
 
   setKpi: (k) => set({ kpi: k }),
   setNetworkActivity: (n) => set({ networkActivity: n }),
