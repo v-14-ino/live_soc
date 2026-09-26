@@ -2137,3 +2137,111 @@ A complete delivery history system that logs every webhook call for debugging an
 3. **Add threat intel feed integration** — external reputation enrichment for source IPs.
 4. **Add a delivery history retention policy** — auto-delete deliveries older than N days + a "clear history" button.
 5. **Add scheduled report generation** — automatically generate + email reports on a schedule (daily/weekly).
+
+---
+Task ID: ASSESSMENT-1 (real telemetry realignment — Phase 1 inspection, NO code changes)
+Agent: orchestrator (main)
+Task: Inspect existing repository architecture before any real-telemetry modifications
+
+## PHASE 1 — ARCHITECTURE ASSESSMENT (inspection only, zero code changes)
+
+### 1. What already exists (verified by reading source)
+
+**Process topology (3 processes):**
+- Next.js dev server (:3000) — frontend + REST API routes (proxies to monitor-service)
+- monitor-service (:3003) — socket.io + internal REST; SOLE owner of in-memory `sessionManager`
+- Caddy gateway (:81) — forwards browser `?XTransformPort=3003` to monitor-service; default → :3000
+
+**Frontend (src/):** single `/` route, 6 views (LiveMonitor, Offense, Defense, History, Reports, Settings), Zustand store, socket.io-client WS hook, ~20 SOC components. Fully working.
+
+**Backend monitoring lib (src/lib/monitoring/):**
+- `scanner.ts` — INITIAL ASSESSMENT. **DETERMINISTIC MOCK** (hash-based, no real nmap). Produces reproducible port/service/hostnames. Already labeled as assessment (not telemetry).
+- `telemetry.ts` — **DEMO GENERATOR**. 5-phase in-process emitter, `isDemo=true` on every event, no real network traffic. This is the ONLY telemetry source today.
+- `detection.ts` — 8 built-in rules, rolling-window `DetectionContext`, cooldown. Operates on `SecurityEvent`. **Reusable for real telemetry as-is.**
+- `correlation.ts` — maps detections→offense/defense scenarios with dedup (100 failures = 1 scenario). **Reusable.**
+- `session.ts` — `sessionManager` singleton. `processEvent()` is the ingestion pipeline: persist→broadcast→detect→alert→correlate→scenario→webhook. **This IS the normalization+detection pipeline** — just fed by the demo generator.
+- `custom-rules.ts` + `custom-rule-context.ts` — user-defined rules with threshold/window. **Wired into processEvent.**
+- `webhook-notifier.ts` — fires HTTP POST on alerts, logs `WebhookDelivery`. **Working.**
+- `adapters/` — `TelemetryAdapter` interface + 5 implementations (nmap, journald, nginx, iptables, suricata). `checkAvailability()` + `start(config, onEvent)`. **SCAFFOLDING ONLY — NOT wired into session.ts.**
+
+**Prisma schema (13 models):** Target, Assessment, Port, Service, MonitoringSession, Event, Alert, ScenarioOffense, ScenarioDefense, Report, AppSetting, AuditLog, CustomRule, WebhookConfig, WebhookDelivery.
+
+**API routes (20):** monitoring CRUD, events/alerts/scenarios, history, reports, settings, targets, rules (custom CRUD), webhooks (CRUD + test + deliveries), adapters (status), health.
+
+### 2. Where telemetry enters the system TODAY
+
+**Single entry point:** `sessionManager.startSession()` in `session.ts:594` calls `createTelemetryGenerator(...)` unconditionally. The `mode` field ("demo"|"live") does NOT change the source — it ALWAYS uses the demo generator. Events flow: demo generator → `onEvent` callback → `processEvent()` → persist+broadcast+detect+correlate.
+
+**There is NO external ingestion endpoint.** No `POST /api/ingest`. No way for an external agent/collector to push events. All events originate inside the monitor-service process.
+
+### 3. Are current lab events synthetic, real, or both?
+
+**100% synthetic.**
+- Scanner (scanner.ts): mock, hash-based, no real nmap binary invoked.
+- Telemetry (telemetry.ts): in-process emitter, `isDemo=true`, no real network/host access.
+- Adapters (adapters/): real implementations exist (journald spawns `journalctl -f`, nginx tails access.log, etc.) and `checkAvailability()` correctly detects them — 2/5 available in sandbox (journald, iptables/dmesg). BUT `start()` is never called by session.ts.
+
+### 4. Reusable components for a collector/normalizer architecture
+
+| Component | Reusability | Notes |
+|---|---|---|
+| `TelemetryAdapter` interface (adapters/base.ts) | HIGH | Already the right abstraction. But produces `SecurityEvent` directly — no raw→normalized split. |
+| `SecurityEvent` type | MEDIUM | Has `isDemo`, `source`, `raw`. MISSING: `dataSource` (REAL/DEMO/ASSESSMENT), `receivedAt`, `hostId`/`hostname`/`os`, `username`, `eventCategory`. |
+| `processEvent()` pipeline (session.ts:162) | HIGH | The normalize→detect→alert→correlate→persist→broadcast pipeline. Feed it real events and it works. |
+| Detection engine (detection.ts) | HIGH | Operates on `SecurityEvent` fields — works on any source. |
+| Correlation engine (correlation.ts) | HIGH | Source-agnostic. |
+| WebSocket (monitor-service) | HIGH | Just broadcasts — source-agnostic. |
+| Webhook notifier | HIGH | Source-agnostic. |
+| Custom rules engine | HIGH | Source-agnostic. |
+
+### 5. Gaps for real telemetry (what's MISSING)
+
+1. **No ingestion endpoint** — no `POST /api/ingest` for external agents/collectors.
+2. **No RAW LOG model** — `Event.rawJson` exists but is optional/loose. No dedicated `RawLog` table that preserves unmodified evidence before normalization.
+3. **No agent/host/heartbeat model** — no `Agent` or `Host` table, no heartbeat mechanism, no host identity on events.
+4. **No `dataSource` field** — only `isDemo` boolean. Cannot distinguish REAL vs DEMO vs ASSESSMENT at the data level (assessment uses a separate model but events from it aren't marked).
+5. **No `receivedAt`** — `timestamp` = event time, not ingestion time.
+6. **No host identity fields** — `hostId`, `hostname`, `os`, `username` absent from `SecurityEvent`/`Event`.
+7. **No `eventCategory` / richer `sourceType`** — `TelemetrySource` is only network|system_logs|web_logs|firewall|ids|scanner. No windows_event_log, linux_auth, syslog, process, etc.
+8. **Adapters NOT wired** — `session.ts` always uses demo generator even when `mode="live"`.
+9. **No Windows Event Log collector** — only Linux-ish adapters exist (journald) + network/firewall/web.
+10. **Scanner is a mock** — nmap adapter exists but `scanner.ts` (the assessment path) doesn't use it.
+
+### 6. Smallest set of changes required (proposed, NOT yet implemented)
+
+To reach a real-telemetry architecture WITHOUT rewriting anything:
+
+**A. Extend the Event model (additive, non-breaking):**
+- Add `dataSource` (REAL|DEMO|ASSESSMENT), `receivedAt`, `hostId?`, `hostname?`, `os?`, `username?`, `eventCategory?` to `Event` + `SecurityEvent`. All nullable/optional → existing demo events unaffected.
+
+**B. Add a RawLog model (new, additive):**
+- `RawLog { id, sourceType, rawPayload (JSON), receivedAt, normalizedEventId? }`. Preserve unmodified evidence. processEvent creates a RawLog before normalization.
+
+**C. Add Agent + Host + Heartbeat models (new, additive):**
+- `Host { id, hostname, os, ip, agentId }`, `Agent { id, name, type, apiKey, lastHeartbeat }`. Enables external agents to register + heartbeat.
+
+**D. Add an ingestion endpoint (new):**
+- `POST /api/ingest` — accepts raw logs from agents/collectors, creates RawLog + normalizes to SecurityEvent + feeds into `processEvent()`. This is the key new entry point that makes the system telemetry-driven.
+
+**E. Wire adapters into session.ts for `mode="live"`:**
+- When `mode="live"`, start available adapters (via `ADAPTER_REGISTRY`) instead of the demo generator. Fall back to demo for unavailable adapters. The `onEvent` callback already matches.
+
+**F. Add Linux collector MVP + Windows collector MVP:**
+- Linux: auth.log/syslog/journald tailing (journald adapter exists; add auth.log/syslog variants).
+- Windows: Windows Event Log via `wevtutil` or PowerShell `Get-WinEvent` (new adapter).
+
+**G. Label clarity in UI:**
+- Event log already shows "DEMO" tag (isDemo). Add "REAL" tag for dataSource=REAL, "ASSESSMENT" for assessment-derived. Telemetry status indicator: CONNECTED/PARTIAL/NO TELEMETRY/DEMO MODE.
+
+**H. Extend detection rules for real telemetry (additive):**
+- Add rules for: successful-login-after-failures, suspicious-process, unexpected-service-creation, suspicious-powershell. New rules = new entries in DETECTION_RULES + detection.ts functions.
+
+**None of A–H requires rewriting existing components.** All are additive extensions to the existing pipeline.
+
+### 7. Assessment conclusion
+
+The existing architecture is **well-structured for extension**: the `processEvent()` pipeline is already a normalize→detect→correlate→alert→broadcast pipeline, just fed by a single in-process demo source. The `TelemetryAdapter` interface is the right collector abstraction. The detection/correlation/webhook engines are source-agnostic.
+
+The **single biggest gap** is the absence of an external ingestion path: there is no way for a real agent or collector to push events into `processEvent()`. Adding `POST /api/ingest` + a `RawLog` model + `dataSource` labeling is the minimal change that converts the system from demo-only to real-telemetry-capable, while preserving 100% of existing functionality.
+
+**No code was modified during this assessment.** Awaiting direction to proceed with implementation phases 2+.
