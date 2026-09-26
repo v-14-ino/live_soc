@@ -85,6 +85,7 @@ const emptyKpi: KpiStats = {
   high: 0,
   medium: 0,
   low: 0,
+  info: 0,
   activeConnections: 0,
   eventsPerSec: 0,
   trafficRate: 0,

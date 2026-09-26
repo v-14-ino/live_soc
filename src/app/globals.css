@@ -225,21 +225,212 @@
     font-variant-numeric: tabular-nums;
     letter-spacing: -0.01em;
   }
+  /* Tighter letter-spacing for large numeric readouts (KPI counts, etc.) */
+  .font-mono-data-lg {
+    font-family: var(--font-geist-mono), ui-monospace, SFMono-Regular, monospace;
+    font-variant-numeric: tabular-nums;
+    letter-spacing: -0.04em;
+  }
 
-  /* Custom scrollbar */
+  /* Custom scrollbar (more visible than the original) */
   .soc-scrollbar::-webkit-scrollbar {
-    width: 8px;
-    height: 8px;
+    width: 10px;
+    height: 10px;
   }
   .soc-scrollbar::-webkit-scrollbar-track {
-    background: transparent;
+    background: color-mix(in oklch, var(--background) 50%, transparent);
+    border-radius: 6px;
   }
   .soc-scrollbar::-webkit-scrollbar-thumb {
-    background: color-mix(in oklch, var(--muted-foreground) 30%, transparent);
-    border-radius: 4px;
+    background: color-mix(in oklch, var(--muted-foreground) 45%, transparent);
+    border-radius: 6px;
+    border: 2px solid transparent;
+    background-clip: padding-box;
+    transition: background 0.15s ease;
   }
   .soc-scrollbar::-webkit-scrollbar-thumb:hover {
-    background: color-mix(in oklch, var(--muted-foreground) 50%, transparent);
+    background: color-mix(in oklch, var(--muted-foreground) 70%, transparent);
+    background-clip: padding-box;
+    border: 2px solid transparent;
+  }
+  .soc-scrollbar {
+    scrollbar-color: color-mix(in oklch, var(--muted-foreground) 45%, transparent) transparent;
+    scrollbar-width: thin;
+  }
+
+  /* Glass morphism — translucent card with backdrop blur */
+  .glass {
+    background: color-mix(in oklch, var(--card) 70%, transparent);
+    backdrop-filter: blur(12px);
+    -webkit-backdrop-filter: blur(12px);
+  }
+
+  /* Card hover lift — GPU-accelerated transform */
+  .card-hover {
+    transition: transform 0.15s ease, box-shadow 0.15s ease, border-color 0.15s ease;
+    will-change: transform;
+  }
+  .card-hover:hover {
+    transform: translateY(-1px);
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
+  }
+
+  /* Severity glow utilities — subtle box-shadow on cards with active alerts */
+  .glow-critical {
+    box-shadow: 0 0 0 1px color-mix(in oklch, var(--soc-critical) 30%, transparent),
+      0 0 12px -2px color-mix(in oklch, var(--soc-critical) 35%, transparent);
+  }
+  .glow-high {
+    box-shadow: 0 0 0 1px color-mix(in oklch, var(--soc-high) 30%, transparent),
+      0 0 12px -2px color-mix(in oklch, var(--soc-high) 35%, transparent);
+  }
+  .glow-medium {
+    box-shadow: 0 0 0 1px color-mix(in oklch, var(--soc-medium) 25%, transparent),
+      0 0 10px -2px color-mix(in oklch, var(--soc-medium) 30%, transparent);
+  }
+  .glow-low {
+    box-shadow: 0 0 0 1px color-mix(in oklch, var(--soc-low) 25%, transparent),
+      0 0 10px -2px color-mix(in oklch, var(--soc-low) 30%, transparent);
+  }
+
+  /* Active monitoring border — animated gradient border */
+  .active-border {
+    position: relative;
+    background-clip: padding-box;
+    border: 1px solid transparent;
+  }
+  .active-border::before {
+    content: "";
+    position: absolute;
+    inset: 0;
+    border-radius: inherit;
+    padding: 1px;
+    background: linear-gradient(
+      120deg,
+      color-mix(in oklch, var(--soc-low) 60%, transparent),
+      color-mix(in oklch, var(--soc-success) 50%, transparent),
+      color-mix(in oklch, var(--soc-low) 60%, transparent)
+    );
+    background-size: 200% 200%;
+    -webkit-mask:
+      linear-gradient(#fff 0 0) content-box,
+      linear-gradient(#fff 0 0);
+    -webkit-mask-composite: xor;
+    mask-composite: exclude;
+    animation: active-border-shift 3s linear infinite;
+    pointer-events: none;
+  }
+  @keyframes active-border-shift {
+    0% { background-position: 0% 50%; }
+    100% { background-position: 200% 50%; }
+  }
+
+  /* Fade-in-up for new events / list items */
+  @keyframes fade-in-up {
+    from {
+      opacity: 0;
+      transform: translateY(4px);
+    }
+    to {
+      opacity: 1;
+      transform: translateY(0);
+    }
+  }
+  .animate-fade-in-up {
+    animation: fade-in-up 0.2s ease-out;
+  }
+
+  /* Severity bar shimmer — for bars representing alert counts */
+  @keyframes shimmer-x {
+    0% { transform: translateX(-100%); }
+    100% { transform: translateX(200%); }
+  }
+  .sev-bar-shimmer {
+    position: relative;
+    overflow: hidden;
+  }
+  .sev-bar-shimmer::after {
+    content: "";
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    left: 0;
+    width: 40%;
+    background: linear-gradient(
+      90deg,
+      transparent,
+      color-mix(in oklch, var(--foreground) 18%, transparent),
+      transparent
+    );
+    animation: shimmer-x 2.4s ease-in-out infinite;
+    pointer-events: none;
+  }
+
+  /* Pulse-glow for live indicators — combined scale + box-shadow pulse */
+  @keyframes pulse-glow {
+    0% {
+      transform: scale(1);
+      box-shadow: 0 0 0 0 currentColor;
+      opacity: 1;
+    }
+    70% {
+      transform: scale(1.05);
+      box-shadow: 0 0 0 4px transparent;
+      opacity: 0.85;
+    }
+    100% {
+      transform: scale(1);
+      box-shadow: 0 0 0 0 transparent;
+      opacity: 1;
+    }
+  }
+  .pulse-glow {
+    animation: pulse-glow 1.8s ease-out infinite;
+  }
+
+  /* Radar sweep — conic-gradient sweep that rotates slowly */
+  @keyframes radar-sweep {
+    0% { transform: rotate(0deg); }
+    100% { transform: rotate(360deg); }
+  }
+  .radar-sweep {
+    position: relative;
+    overflow: hidden;
+  }
+  .radar-sweep::after {
+    content: "";
+    position: absolute;
+    inset: -25%;
+    background: conic-gradient(
+      from 0deg,
+      transparent 0deg,
+      transparent 270deg,
+      color-mix(in oklch, var(--soc-low) 35%, transparent) 320deg,
+      color-mix(in oklch, var(--soc-low) 8%, transparent) 360deg
+    );
+    animation: radar-sweep 4s linear infinite;
+    pointer-events: none;
+  }
+
+  /* Status dot ring — subtle expanding ring around pulsing dots */
+  @keyframes dot-ring {
+    0% {
+      transform: scale(1);
+      opacity: 0.6;
+    }
+    100% {
+      transform: scale(2.4);
+      opacity: 0;
+    }
+  }
+  .dot-ring::before {
+    content: "";
+    position: absolute;
+    inset: 0;
+    border-radius: 9999px;
+    background: currentColor;
+    animation: dot-ring 1.8s ease-out infinite;
+    pointer-events: none;
   }
 
   /* Grid background for SOC feel */

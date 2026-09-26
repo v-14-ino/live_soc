@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
 import {
   Activity,
   Swords,
@@ -10,12 +10,16 @@ import {
   Settings as SettingsIcon,
   Radar,
   ShieldCheck,
+  Command as CommandIcon,
+  BookOpen,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useAppStore } from "@/lib/store";
 import { useMonitorWs } from "@/hooks/use-monitor-ws";
 import { AuthWarning } from "@/components/soc/auth-warning";
 import { StatusDot } from "@/components/soc/status-dot";
+import { CommandPalette } from "@/components/soc/command-palette";
+import { DetectionRulesDialog } from "@/components/soc/detection-rules-dialog";
 import { LiveMonitorView } from "@/components/views/live-monitor-view";
 import { OffenseView } from "@/components/views/offense-view";
 import { DefenseView } from "@/components/views/defense-view";
@@ -48,6 +52,7 @@ export default function Home() {
   const status = useAppStore((s) => s.status);
   const connected = useAppStore((s) => s.connected);
   const mode = useAppStore((s) => s.mode);
+  const [rulesOpen, setRulesOpen] = useState(false);
 
   // Connect websocket whenever there's an active session
   useMonitorWs({ sessionId, enabled: !!sessionId });
@@ -83,8 +88,8 @@ export default function Home() {
       <aside className="flex w-[200px] shrink-0 flex-col border-r border-sidebar-border bg-sidebar/80 backdrop-blur-md">
         {/* Brand */}
         <div className="flex items-center gap-2.5 border-b border-sidebar-border px-4 py-3.5">
-          <div className="relative flex h-8 w-8 items-center justify-center rounded-md bg-gradient-to-br from-[color:var(--soc-low)] to-[color:var(--soc-info)]">
-            <Radar className="h-4.5 w-4.5 text-white" />
+          <div className="radar-sweep relative flex h-8 w-8 items-center justify-center rounded-md bg-gradient-to-br from-[color:var(--soc-low)] to-[color:var(--soc-info)]">
+            <Radar className="relative h-4.5 w-4.5 text-white" />
           </div>
           <div className="min-w-0">
             <div className="font-mono-data text-sm font-bold tracking-tight leading-none">
@@ -105,22 +110,40 @@ export default function Home() {
             {NAV.map((item) => {
               const active = view === item.key;
               const Icon = item.icon;
+              const accentColor = item.accent ?? "var(--sidebar-primary)";
               return (
                 <li key={item.key}>
                   <button
                     onClick={() => setView(item.key)}
                     className={cn(
-                      "group flex w-full items-center gap-2.5 rounded-md px-2.5 py-2 text-left text-sm transition-all",
+                      "group relative flex w-full items-center gap-2.5 rounded-md px-2.5 py-2 pl-3 text-left text-sm transition-all duration-150",
                       active
                         ? "bg-sidebar-accent text-sidebar-accent-foreground shadow-sm"
-                        : "text-sidebar-foreground/70 hover:bg-sidebar-accent/50 hover:text-sidebar-accent-foreground",
+                        : "text-sidebar-foreground/70 hover:bg-sidebar-accent/50 hover:text-sidebar-accent-foreground hover:translate-x-0.5",
                     )}
                     style={
-                      active && item.accent
-                        ? { boxShadow: `inset 2px 0 0 ${item.accent}` }
+                      active
+                        ? {
+                            backgroundImage:
+                              "linear-gradient(90deg, color-mix(in oklch, var(--sidebar-accent) 100%, transparent), color-mix(in oklch, var(--sidebar-accent) 60%, transparent))",
+                          }
                         : undefined
                     }
                   >
+                    {/* Left accent bar — 3px, accent color, brightens on hover */}
+                    <span
+                      aria-hidden="true"
+                      className={cn(
+                        "absolute left-0 top-1/2 h-5 -translate-y-1/2 rounded-r-sm transition-all duration-150",
+                        active ? "opacity-100 w-[3px]" : "opacity-0 w-[2px] group-hover:opacity-40",
+                      )}
+                      style={{
+                        backgroundColor: accentColor,
+                        boxShadow: active
+                          ? `0 0 8px -1px ${accentColor}, 0 0 2px ${accentColor}`
+                          : "none",
+                      }}
+                    />
                     <Icon
                       className={cn(
                         "h-4 w-4 shrink-0 transition-colors",
@@ -129,6 +152,17 @@ export default function Home() {
                       style={active && item.accent ? { color: item.accent } : undefined}
                     />
                     <span className="truncate font-medium">{item.label}</span>
+                    {/* Bottom border glow on active */}
+                    {active && (
+                      <span
+                        aria-hidden="true"
+                        className="pointer-events-none absolute inset-x-1 bottom-0 h-px"
+                        style={{
+                          background: `linear-gradient(90deg, transparent, ${accentColor}, transparent)`,
+                          opacity: 0.6,
+                        }}
+                      />
+                    )}
                   </button>
                 </li>
               );
@@ -138,7 +172,12 @@ export default function Home() {
 
         {/* Connection status */}
         <div className="border-t border-sidebar-border px-3 py-2.5">
-          <div className="rounded-md bg-sidebar-accent/40 p-2.5">
+          <div
+            className={cn(
+              "relative overflow-hidden rounded-md bg-sidebar-accent/40 p-2.5",
+              monitorActive && "scanline",
+            )}
+          >
             <div className="mb-1.5 flex items-center justify-between">
               <span className="font-mono-data text-[9px] uppercase tracking-wider text-muted-foreground">
                 System
@@ -182,6 +221,9 @@ export default function Home() {
         {/* Authorized scope warning */}
         <div className="border-t border-sidebar-border px-3 py-2">
           <AuthWarning />
+          <div className="mt-1.5 px-1 text-[9px] font-mono-data tracking-wider text-muted-foreground/60">
+            v1.0 · Authorized Lab Use Only
+          </div>
         </div>
       </aside>
 
@@ -200,10 +242,35 @@ export default function Home() {
             )}
           </div>
           <div className="flex items-center gap-3">
+            <button
+              onClick={() => setRulesOpen(true)}
+              className="flex items-center gap-1.5 rounded-md border border-border/60 bg-card/40 px-2 py-1 font-mono-data text-[10px] uppercase tracking-wider text-muted-foreground transition-colors hover:bg-card/60 hover:text-foreground"
+              title="View detection rules reference"
+            >
+              <BookOpen className="h-3 w-3" />
+              <span className="hidden sm:inline">Rules</span>
+            </button>
+            <button
+              onClick={() => {
+                // Trigger Cmd+K by dispatching a synthetic keyboard event
+                document.dispatchEvent(
+                  new KeyboardEvent("keydown", {
+                    key: "k",
+                    metaKey: true,
+                    bubbles: true,
+                  }),
+                );
+              }}
+              className="flex items-center gap-1.5 rounded-md border border-border/60 bg-card/40 px-2 py-1 font-mono-data text-[10px] uppercase tracking-wider text-muted-foreground transition-colors hover:bg-card/60 hover:text-foreground"
+              title="Open command palette (Cmd+K)"
+            >
+              <CommandIcon className="h-3 w-3" />
+              <span className="hidden sm:inline">Cmd+K</span>
+            </button>
             {sessionId && (
               <div className="flex items-center gap-2 font-mono-data text-[10px] text-muted-foreground">
                 <ShieldCheck className="h-3.5 w-3.5 text-[color:var(--soc-success)]" />
-                <span>Authorized Lab Scope</span>
+                <span className="hidden md:inline">Authorized Lab Scope</span>
               </div>
             )}
           </div>
@@ -219,6 +286,10 @@ export default function Home() {
           {view === "settings" && <SettingsView />}
         </div>
       </main>
+
+      {/* Global overlays */}
+      <CommandPalette onOpenRules={() => setRulesOpen(true)} />
+      <DetectionRulesDialog open={rulesOpen} onOpenChange={setRulesOpen} />
     </div>
   );
 }

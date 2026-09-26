@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useState, type ReactNode } from "react";
+import { useMemo, useState, useCallback, type ReactNode } from "react";
 import {
   Activity,
   Square,
@@ -19,6 +19,7 @@ import {
   Zap,
   Gauge,
   Server,
+  Info,
   LucideIcon,
 } from "lucide-react";
 import {
@@ -36,6 +37,7 @@ import { KpiCard } from "@/components/soc/kpi-card";
 import { SeverityBadge } from "@/components/soc/severity-badge";
 import { StatusDot } from "@/components/soc/status-dot";
 import { AuthWarning } from "@/components/soc/auth-warning";
+import { EventDetailDrawer } from "@/components/soc/event-detail-drawer";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import {
@@ -693,6 +695,7 @@ function KpiGrid() {
     { label: "High", value: fmt(kpi?.high), icon: AlertTriangle, accent: "high", live: false },
     { label: "Medium", value: fmt(kpi?.medium), icon: AlertCircle, accent: "medium", live: false },
     { label: "Low", value: fmt(kpi?.low), icon: ShieldAlert, accent: "low", live: false },
+    { label: "Info", value: fmt(kpi?.info), icon: Info, accent: "info", live: false },
     { label: "Active Conns", value: fmt(kpi?.activeConnections), icon: NetworkIcon, accent: "default", live: isActive },
     { label: "Events/Sec", value: fmt(kpi?.eventsPerSec), icon: Zap, accent: "default", live: isActive },
     { label: "Traffic KB/s", value: fmt(kpi?.trafficRate), icon: Gauge, accent: "default", live: isActive },
@@ -700,7 +703,7 @@ function KpiGrid() {
   ];
 
   return (
-    <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-5 xl:grid-cols-9">
+    <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-5 xl:grid-cols-10">
       {cards.map((c) => (
         <KpiCard
           key={c.label}
@@ -728,6 +731,8 @@ function LiveSecurityLog() {
   const [sevFilter, setSevFilter] = useState<Severity | "all">("all");
   const [typeFilter, setTypeFilter] = useState<string>("all");
   const [search, setSearch] = useState("");
+  const [selectedEvent, setSelectedEvent] = useState<SecurityEvent | null>(null);
+  const [drawerOpen, setDrawerOpen] = useState(false);
 
   const filtered = useMemo(() => {
     const q = search.trim().toLowerCase();
@@ -743,6 +748,23 @@ function LiveSecurityLog() {
       })
       .slice(0, 200);
   }, [events, sevFilter, typeFilter, search]);
+
+  const relatedEvents = useMemo(() => {
+    if (!selectedEvent) return [];
+    return events
+      .filter(
+        (e) =>
+          e.eventId !== selectedEvent.eventId &&
+          ((e.sourceIp && e.sourceIp === selectedEvent.sourceIp) ||
+            (e.destPort && e.destPort === selectedEvent.destPort)),
+      )
+      .slice(0, 30);
+  }, [selectedEvent, events]);
+
+  const handleEventClick = useCallback((e: SecurityEvent) => {
+    setSelectedEvent(e);
+    setDrawerOpen(true);
+  }, []);
 
   return (
     <Panel
@@ -875,7 +897,8 @@ function LiveSecurityLog() {
                 return (
                   <tr
                     key={e.id}
-                    className="border-b border-border/20 transition-colors hover:bg-accent/30"
+                    onClick={() => handleEventClick(e)}
+                    className="cursor-pointer border-b border-border/20 transition-colors hover:bg-accent/30"
                   >
                     <td className="whitespace-nowrap px-2 py-1.5 font-mono-data text-muted-foreground">
                       {formatTime(e.timestamp)}
@@ -934,6 +957,12 @@ function LiveSecurityLog() {
           </table>
         )}
       </div>
+      <EventDetailDrawer
+        event={selectedEvent}
+        open={drawerOpen}
+        onOpenChange={setDrawerOpen}
+        relatedEvents={relatedEvents}
+      />
     </Panel>
   );
 }

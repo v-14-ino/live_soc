@@ -202,6 +202,7 @@ export interface KpiStats {
   high: number;
   medium: number;
   low: number;
+  info: number;
   activeConnections: number;
   eventsPerSec: number;
   trafficRate: number; // KB/s

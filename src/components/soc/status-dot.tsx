@@ -51,13 +51,27 @@ export function StatusDot({
       )}
       style={{ color }}
     >
-      <span className="relative inline-flex">
+      <span className="relative inline-flex h-2 w-2 items-center justify-center">
+        {/* Expanding ring (only when pulsing) */}
+        {shouldPulse && (
+          <span
+            className="dot-ring absolute inset-0 rounded-full"
+            style={{ color }}
+            aria-hidden="true"
+          />
+        )}
+        {/* Core dot — gets a subtle glow when pulsing */}
         <span
           className={cn(
-            "inline-block h-2 w-2 rounded-full",
-            shouldPulse && "live-pulse",
+            "relative inline-block h-2 w-2 rounded-full transition-transform duration-200",
+            shouldPulse && "pulse-glow",
           )}
-          style={{ backgroundColor: color }}
+          style={{
+            backgroundColor: color,
+            boxShadow: shouldPulse
+              ? `0 0 6px -1px ${color}, 0 0 2px ${color}`
+              : `0 0 4px -2px ${color}`,
+          }}
         />
       </span>
       {label && <span>{label}</span>}

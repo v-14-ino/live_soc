@@ -24,6 +24,7 @@ export function computeKpi(
   let high = 0;
   let medium = 0;
   let low = 0;
+  let info = 0;
   const nowMs = Date.now();
   let eventsInLast1s = 0;
   let trafficBytes = 0;
@@ -43,6 +44,7 @@ export function computeKpi(
         low++;
         break;
       default:
+        info++;
         break;
     }
     const t = Date.parse(e.timestamp);
@@ -63,6 +65,7 @@ export function computeKpi(
     high,
     medium,
     low,
+    info,
     activeConnections,
     eventsPerSec: +eventsInLast1s.toFixed(2),
     trafficRate,

@@ -627,3 +627,185 @@ Stage Summary:
   • Frontend: single / route with sidebar + 6 views (LiveMonitor, Offense, Defense, History, Reports, Settings) → src/app/page.tsx + src/components/views/
   • DB: Prisma + SQLite, 11 models → prisma/schema.prisma
 - Safety: NO attack/exploit/DDoS/brute-force functionality. Observes, detects, correlates, analyzes, reports only. Authorized-scope validation rejects public IPs. Demo events clearly labeled.
+
+---
+Task ID: STYLING-1
+Agent: frontend-styling-expert (sub agent)
+Task: Improve LiveSOC visual styling with more details and micro-interactions
+
+Work Log:
+- Read project context (worklog.md last sections, globals.css, page.tsx, all 5 SOC shared components, views/ listing, live-monitor-view.tsx KpiGrid at line ~686) to understand the existing dark SOC design language before modifying.
+- Enhanced ONLY styling-related files. No view files were touched. No functionality changes. No new dependencies. All animations use GPU-accelerated `transform` / `opacity` properties.
+
+Files modified (5):
+
+1. **src/app/globals.css** — added a new block of utilities/animations inside the existing `@layer utilities`:
+   - `.font-mono-data-lg` — tightens `letter-spacing: -0.04em` for large numeric readouts (KPI counts) on top of the existing `font-mono-data` (which stays at `-0.01em`).
+   - `.soc-scrollbar` improvements — wider (10px), rounded 6px thumb with transparent 2px border for padding-box clipping, brighter 45% muted-foreground opacity (was 30%), 70% on hover, added a `scrollbar-color`/`scrollbar-width: thin` fallback for Firefox.
+   - `.glass` — `background: color-mix(in oklch, var(--card) 70%, transparent); backdrop-filter: blur(12px);` with `-webkit-` prefix for Safari.
+   - `.card-hover` — `transition: transform 0.15s ease, box-shadow 0.15s ease, border-color 0.15s ease; will-change: transform;` + `:hover { transform: translateY(-1px); box-shadow: 0 4px 12px rgba(0,0,0,0.3); }` (GPU-accelerated).
+   - `.glow-critical` / `.glow-high` / `.glow-medium` / `.glow-low` — subtle 1px outline + 12px outer box-shadow using `color-mix` of the severity color at 25–35% opacity.
+   - `.active-border` — animated gradient border via `::before` pseudo-element with `linear-gradient(120deg, low, success, low)`, `background-size: 200% 200%`, mask compositing (`-webkit-mask-composite: xor; mask-composite: exclude;`) to clip the gradient to a 1px border, with `@keyframes active-border-shift` shifting `background-position` over 3s linear infinite.
+   - `@keyframes fade-in-up { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: translateY(0); } }` + `.animate-fade-in-up { animation: fade-in-up 0.2s ease-out; }` for new event list items.
+   - `@keyframes shimmer-x` + `.sev-bar-shimmer::after` — 40%-wide diagonal light sweep on severity bars over 2.4s ease-in-out infinite.
+   - `@keyframes pulse-glow` + `.pulse-glow` — combined `transform: scale(1 → 1.05 → 1)` + `box-shadow: 0 0 0 0 → 4px currentColor → 0` pulse for live indicators, 1.8s ease-out infinite.
+   - `@keyframes radar-sweep` + `.radar-sweep::after` — `conic-gradient(from 0deg, transparent 0–270deg, var(--soc-low) 35% @ 320deg, var(--soc-low) 8% @ 360deg)` rotated 360° over 4s linear infinite for the sidebar brand logo.
+   - `@keyframes dot-ring` + `.dot-ring::before` — expanding ring (`scale(1 → 2.4)` + `opacity 0.6 → 0`) for pulsing status dots, 1.8s ease-out infinite.
+
+2. **src/components/soc/kpi-card.tsx** — rewrote the component:
+   - Added `card-hover` and `group` classes for the lift-on-hover effect.
+   - Added a `parseNumericValue()` helper that strips non-numeric chars and returns a finite number.
+   - Severity glow: when `accent ∈ {critical, high, medium, low}` and the parsed value > 0, the corresponding `glow-critical` / `glow-high` / `glow-medium` / `glow-low` class is added (lookup via `accentGlow` map).
+   - Added a top gradient line (`<div>` with `linear-gradient(90deg, transparent, ${color}, transparent)`, `h-px`, opacity 70% → 100% on hover).
+   - Left accent bar now uses `box-shadow: 0 0 6px -1px ${color}` and transitions `w-0.5 → w-[3px]` + opacity 80% → 100% on `group-hover`.
+   - Number element now uses `font-mono-data-lg` + explicit `tabular-nums` class + `text-shadow: 0 0 8px color-mix(in oklch, ${color} 35%, transparent)` only when the glow is active.
+   - Icon opacity transitions 60% → 90% on group-hover.
+
+3. **src/components/soc/panel.tsx** — rewrote the component:
+   - Added `accentHeaderLine` map: `default = muted-foreground 35%, offense = soc-critical 55%, defense = soc-low 55%`.
+   - Header now has a `linear-gradient(180deg, card/40%, card/20%)` background (inline style to ensure color-mix compatibility).
+   - Header wraps content in `group/header` and has `transition-colors duration-200 hover:bg-card/40` for a subtle hover state.
+   - Added a 1px absolute-positioned bottom line inside the header using the accent color.
+   - Panel icon now picks up `var(--soc-critical)` / `var(--soc-low)` color based on the panel accent (offense / defense), was previously always `var(--muted-foreground)`.
+   - Panel body now has the `glass` class for the glass-morphism effect (was just `flex-1 min-h-0`).
+
+4. **src/components/soc/status-dot.tsx** — rewrote the dot rendering:
+   - When pulsing: dot now has `pulse-glow` animation (combined scale + box-shadow) instead of just the original `live-pulse` outer ring.
+   - Added a separate `.dot-ring` expanding ring element (absolute, full-inset, rounded-full, `background: currentColor`) layered behind the dot — gives a smoother, more visible expanding ring than the original `::before`.
+   - Core dot now has a `box-shadow: 0 0 6px -1px ${color}, 0 0 2px ${color}` glow when pulsing (was no glow before), and a static `0 0 4px -2px ${color}` when not pulsing.
+
+5. **src/app/page.tsx** — enhanced the sidebar only (top bar + main view untouched):
+   - Brand logo box: added `radar-sweep` class so the conic-gradient sweep rotates inside the gradient-filled square. `<Radar>` icon gets `relative` to sit above the `::after` sweep.
+   - Nav items: rewrote the `<button>` rendering:
+     • Added `relative` + `pl-3` (so the left accent bar has room) + `transition-all duration-150`.
+     • Hover state on inactive items now includes `hover:translate-x-0.5` for the slide-right micro-interaction.
+     • Active item: kept `bg-sidebar-accent` + added inline `linear-gradient(90deg, sidebar-accent 100%, sidebar-accent 60%)` for a subtle directional gradient.
+     • Left accent bar is now a dedicated `<span>` (not a `boxShadow: inset`): `absolute left-0 top-1/2 h-5 -translate-y-1/2 rounded-r-sm`, `w-[3px] opacity-100` when active (with `box-shadow: 0 0 8px -1px ${accentColor}, 0 0 2px ${accentColor}` glow), `w-[2px] opacity-0 group-hover:opacity-40` when inactive.
+     • Each nav item now has its own accent color (`item.accent ?? var(--sidebar-primary)`), so Live Monitor / History / Reports / Settings get the cyan sidebar-primary bar, while Offense gets red and Defense gets cyan.
+     • Active item bottom border glow: `<span>` with `linear-gradient(90deg, transparent, ${accentColor}, transparent)`, `h-px`, opacity 0.6 — sits at `inset-x-1 bottom-0`.
+   - System status box: wraps the box in `cn("relative overflow-hidden rounded-md bg-sidebar-accent/40 p-2.5", monitorActive && "scanline")` so the existing `scanline` CSS animation (the moving 2px horizontal line) activates only when monitoring is active.
+   - Authorized-scope footer: added a `v1.0 · Authorized Lab Use Only` mono-data line (text-[9px], muted-foreground/60) below the AuthWarning, inside the same border-t box.
+
+Verification results:
+1. **Compile**: `tail -5 dev.log` shows `✓ Compiled in 129ms / 256ms / 288ms / 520ms` repeatedly with zero errors and zero warnings after each save. No CSS syntax errors. No TypeScript errors.
+2. **Lint**: `bun run lint` → **0 errors, 0 warnings** (exit 0).
+3. **Agent-browser E2E** (via `http://localhost:81/`):
+   - Opened the app at 1600×900 viewport. Page title: "LiveSOC — Live Security Monitoring & Detection Platform". Initial screenshot: `styling-1-screenshot.png` (100 KB).
+   - Clicked START MONITORING, waited 3s for telemetry to populate. Screenshot: `styling-1-monitoring.png` (228 KB).
+   - Hovered over the Offense nav item to trigger the slide-right hover effect. Screenshot: `styling-1-sidebar-hover.png` (240 KB).
+   - Full-page screenshot: `styling-1-full.png` (239 KB).
+   - Final monitoring-state screenshot: `styling-1-final.png` (252 KB).
+   - **DOM verification via `agent-browser eval`** (all expected, all rendered correctly):
+     - `.radar-sweep` element: **found** (brand logo box).
+     - Active nav button (`bg-sidebar-accent` or `linear-gradient` style): **found**.
+     - "Authorized Lab Use Only" version text: **found** in the sidebar footer.
+     - Accent bars in nav (`aside nav span[style*="box-shadow"]`): **6 total** (one per nav item), **1 in the active first li**.
+     - KPI cards with `card-hover` class: **10** (matches the 10-card KpiGrid).
+     - KPI value elements with `font-mono-data-lg`: **10**.
+     - KPI cards with severity glow: **1** — the "Medium" card (value 42) had `glow-medium`. The "Critical"/"High"/"Low" cards had value 0 so correctly did NOT glow. The "Info" card (value 21) correctly did NOT glow because `info` accent is not in the glow map (per spec: only critical/high/medium/low).
+     - Verified the medium card's value element inline style: `color: var(--soc-medium); text-shadow: 0 0 8px color-mix(in oklch, var(--soc-medium) 35%, transparent);` — exactly as specified.
+     - Status dots with `pulse-glow`: **5** (System ONLINE, Monitor ACTIVE, Socket LIVE, plus the live-pulse dots in the empty-state Live Security Log + Alerts panels).
+     - `.dot-ring` expanding rings: **5**.
+     - `.glass` panels: **3** (Live Security Log, Live Alerts, Live Network Activity panel bodies).
+     - `.scanline` elements: **1** (the System status box — monitoring was active).
+     - Panel headers (`[class*="group/header"]`): **3**, all with `linear-gradient(180deg, ...)` inline style confirmed.
+     - Panel accent bottom line (header's last child): confirmed `background: color-mix(in oklch, var(--muted-foreground) 35%, transparent)`, `class="pointer-events-none absolute inset-x-0 bottom-0 h-px"`, positioned exactly at the header bottom (top: 531, bottom: 532, parent height: 49px).
+   - `agent-browser errors` → empty (no page-level errors).
+   - `agent-browser console` → only pre-existing "Encountered two children with the same key" warnings from old historical session events (cuid collision when re-rendering the events table on hot reload — unrelated to this styling task, was present before).
+
+Files modified summary:
+- `src/app/globals.css` (added ~210 lines of new utility classes and keyframes inside the existing `@layer utilities` block; replaced the original `font-mono-data` and `soc-scrollbar` blocks with enhanced versions)
+- `src/components/soc/kpi-card.tsx` (full component rewrite, ~98 lines)
+- `src/components/soc/panel.tsx` (full component rewrite, ~67 lines)
+- `src/components/soc/status-dot.tsx` (rewrote the dot rendering block, ~67 lines)
+- `src/app/page.tsx` (sidebar-only changes via 4 targeted MultiEdits; top bar + main view untouched)
+
+Caveats for next agents:
+- **`active-border` utility is defined but NOT yet applied anywhere in the views** — it's available for future use on cards/panels that need to indicate "actively monitoring" state (e.g., wrapping the Live Monitor's outer container or the active-session card in History view). Same for `animate-fade-in-up` (could be applied to new event rows in the Live Security Log) and `sev-bar-shimmer` (could be applied to severity bars in the Offense view's confidence meter). The spec asked me to add these utilities — adding call-sites in views is out of scope for STYLING-1 since the constraint was "Do NOT rewrite any view files."
+- **Status dot now uses BOTH `pulse-glow` AND `dot-ring`** — the original `live-pulse` outer `::before` ring has been removed from the dot itself (it's still used by the small "live" indicator in the KpiCard's top-right corner and the empty-state dots in the Live Security Log). The dot-ring provides a smoother, more visible expansion; the pulse-glow provides the box-shadow glow + slight scale pulse on the core dot. If you want to consolidate, you can replace `live-pulse` usages with the new classes, but the original is kept for backward compatibility.
+- **Panel header gradient is applied via inline `style`** (not a Tailwind class) because Tailwind 4's arbitrary-value syntax for `linear-gradient` + `color-mix` is verbose; inline style is more readable and works with the existing CSS variable system.
+- **KPI glow triggers on parsed numeric value > 0** — `parseNumericValue` strips non-numeric characters, so a value like "0.96 KB/s" parses to 0.96 (would glow if it were a severity accent — but "Traffic KB/s" is `accent: "default"`, so it never glows). String values like "—" or "n/a" parse to 0 and do not glow. This matches the spec: "if accent is critical/high/medium/low and value > 0, add the corresponding glow class."
+- **All animations use `transform` / `opacity` / `box-shadow`** — no `width`/`height`/`top`/`left` transitions on animated elements (the nav accent bar uses `w-0.5 → w-[3px]` transition, but this is a one-time hover state change, not a continuous animation, so it won't cause jank). The continuous animations (`radar-sweep`, `pulse-glow`, `dot-ring`, `shimmer-x`, `scan-line`, `active-border-shift`) all use `transform`/`opacity`/`background-position` — GPU-accelerated and `will-change`-friendly.
+
+---
+Task ID: REVIEW-1 (cron-triggered webDevReview)
+Agent: orchestrator (main)
+Task: QA testing, bug fix (KPI INFO), new features (command palette, event drawer, rules dialog), styling improvements
+
+## Current Project Status Assessment
+- All 3 services healthy: Next.js (:3000), monitor-service (:3003), Caddy gateway (:81).
+- Full end-to-end flow verified working via agent-browser through the gateway.
+- 0 lint errors, 0 warnings. No console errors during testing.
+- All 6 views (LiveMonitor, Offense, Defense, History, Reports, Settings) functional.
+
+## Completed Modifications
+
+### 1. Bug Fix: KPI INFO severity count (UX issue)
+**Problem:** During Phase 1 of demo telemetry (first ~20s), all events are "info" severity. The KPI cards only showed critical/high/medium/low counts — all showing 0 while EVENTS showed 20+. This was confusing (looked like a bug).
+**Root cause:** `computeKpi()` in `src/lib/monitoring/stats.ts` only counted critical/high/medium/low; "info" events fell into the `default` branch and were silently ignored.
+**Fix:** Added `info` field to `KpiStats` type, counted info events in `computeKpi()`, added an "Info" KPI card to the LiveMonitor KPI grid (now 10 cards, `xl:grid-cols-10`).
+**Files:** `src/lib/types.ts`, `src/lib/monitoring/stats.ts`, `src/lib/store.ts` (emptyKpi), `src/components/views/live-monitor-view.tsx` (KpiGrid + Info icon import + grid cols).
+**Verified:** INFO card shows 11 during Phase 1; MEDIUM card shows 107 during Phase 2 — all events now accounted for.
+
+### 2. New Feature: Global Command Palette (Cmd+K)
+**What:** Press Cmd/Ctrl+K anywhere to open a command palette with:
+- Navigation: jump to any of the 6 views
+- Actions: start/stop monitoring, generate report from active session
+- Reference: open detection rules reference, configure collectors
+- Tips: keyboard shortcut hints
+**Files:** `src/components/soc/command-palette.tsx` (new), `src/app/page.tsx` (integrated + Cmd+K button in top bar).
+**Verified:** Opens via Cmd+K or button click, all commands functional.
+
+### 3. New Feature: Event Detail Drawer
+**What:** Click any event row in the Live Security Log to open a right-side drawer showing:
+- Event ID + severity badge + DEMO tag
+- Full event message
+- Connection diagram (source IP:port → dest IP:port with arrow)
+- Metadata table (time, type, protocol, source collector, status, event ID)
+- Raw telemetry data (JSON pretty-printed)
+- Related Activity list (events from same source IP or same dest port, up to 30)
+- Authorized-scope disclaimer
+**Files:** `src/components/soc/event-detail-drawer.tsx` (new), `src/components/views/live-monitor-view.tsx` (integrated: clickable rows + drawer render).
+**Verified:** Clicking an event row opens the drawer with all sections populated.
+
+### 4. New Feature: Detection Rules Reference Dialog
+**What:** A "Rules" button in the top bar opens a dialog showing all 8 detection rules as detailed cards:
+- Rule ID, severity badge, category tag, confidence percentage
+- Rule name + description
+- Conditions box (mono text)
+- Recommended Action box
+- Footer note about confidence interpretation
+**Files:** `src/components/soc/detection-rules-dialog.tsx` (new), `src/app/page.tsx` (Rules button in top bar).
+**Verified:** Dialog opens, all 8 rules render with full details.
+
+### 5. Styling Improvements (subagent STYLING-1)
+Enhanced visual polish across the platform:
+- **Sidebar:** animated radar-sweep on brand logo, 3px accent bars on active nav items with gradient backgrounds, hover translate-x effect, scanline animation on System status box when monitoring, "v1.0 · Authorized Lab Use Only" footer.
+- **KPI cards:** hover lift effect, severity glow when value > 0, top gradient line, text-shadow glow on numbers.
+- **Panels:** gradient header backgrounds, accent-color bottom border lines, glass-morphism body.
+- **Status dots:** smoother pulse-glow + expanding ring + color-matched glow.
+- **New CSS utilities:** `.radar-sweep`, `.glow-critical/high/medium/low`, `.card-hover`, `.active-border`, `.animate-fade-in-up`, `.glass`, `.pulse-glow`, `.dot-ring`, `.font-mono-data-lg`.
+**Files:** `src/app/globals.css`, `src/components/soc/kpi-card.tsx`, `src/components/soc/panel.tsx`, `src/components/soc/status-dot.tsx`, `src/app/page.tsx`.
+
+## Verification Results
+- `bun run lint`: 0 errors, 0 warnings
+- `dev.log`: no compile errors, clean hot-reloads
+- agent-browser E2E through gateway (:81):
+  - Initial load: no console errors ✓
+  - Start monitoring: KPIs update live, INFO card shows info events ✓
+  - Cmd+K palette: opens, navigation/actions/reference sections functional ✓
+  - Rules dialog: all 8 rules render with conditions/confidence/actions ✓
+  - Event drawer: opens on row click, shows full context + related activity ✓
+  - All 6 views still functional ✓
+
+## Unresolved Issues / Risks
+- **None critical.** All features working end-to-end.
+- Minor: the `KeyboardEvent` dispatch for the Cmd+K button click is a workaround (synthetic event). A cleaner approach would be to lift the `open` state to the parent, but the current approach works reliably.
+- The monitor-service process (PID 3234) has been running since the initial build. If it ever crashes, restart with `cd /home/z/my-project/mini-services/monitor-service && bun run dev`.
+
+## Priority Recommendations for Next Phase
+1. **Add a "Threat Map" visualization** — a world map or network topology view showing source IPs geolocated, with animated connection lines to the target. This would be a visually striking addition to the Live Monitor.
+2. **Add alert acknowledgement** — let users click alerts to mark them as "acknowledged" or "resolved", with the status flowing back to the backend.
+3. **Add CSV/JSON export** for events and alerts from the History detail dialog.
+4. **Add a "Compare Sessions" feature** — diff two historical sessions to see how the target's security posture changed.
+5. **Add real telemetry adapter scaffolding** — even if non-functional in the sandbox, provide the interface and configuration for connecting real nmap/journald/nginx-log/iptables/suricata adapters.
