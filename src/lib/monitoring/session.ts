@@ -14,6 +14,7 @@
 import { db } from "@/lib/db";
 import type {
   AssessmentResult,
+  CustomRule,
   KpiStats,
   NetworkActivityStats,
   SecurityAlert,
@@ -37,6 +38,12 @@ import {
 } from "./correlation";
 import { computeKpi, computeNetworkActivity } from "./stats";
 import { auditLog } from "./audit";
+import { evaluateCustomRules } from "./custom-rules";
+import {
+  createCustomRuleContext,
+  checkCustomRuleFiring,
+  type CustomRuleContext,
+} from "./custom-rule-context";
 
 const RECENT_EVENTS_CAP = 500;
 const RECENT_ALERTS_CAP = 200;
@@ -48,6 +55,8 @@ export interface ActiveSession {
   detectionCtx: DetectionContext;
   correlationState: CorrelationState;
   telemetry: TelemetryGenerator;
+  customRules: CustomRule[];
+  customRuleCtx: CustomRuleContext;
   subscribers: Set<(msg: WSMessage) => void>;
   eventCounter: { value: number };
   alertCounter: { value: number };
@@ -275,6 +284,89 @@ async function processEvent(active: ActiveSession, event: SecurityEvent): Promis
     }
   }
 
+  // ---- custom rules evaluation (runs alongside built-in rules) ----
+  if (active.customRules.length > 0) {
+    const customMatches = evaluateCustomRules(event, active.customRules);
+    const nowMs = Date.parse(event.timestamp) || Date.now();
+    for (const match of customMatches) {
+      // Check threshold + window + cooldown
+      const shouldFire = checkCustomRuleFiring(
+        active.customRuleCtx,
+        match.rule,
+        nowMs,
+      );
+      if (!shouldFire) continue;
+
+      active.alertCounter.value += 1;
+      const seq = String(active.alertCounter.value).padStart(5, "0");
+      const alertId = active.idPrefix
+        ? `ALR-${active.idPrefix}-${seq}`
+        : `ALR-${seq}`;
+      const alert: SecurityAlert = {
+        id: alertId,
+        alertId,
+        sessionId: active.session.id,
+        eventId: event.eventId,
+        ruleId: match.rule.ruleId,
+        ruleName: `[Custom] ${match.rule.name}`,
+        severity: match.severity,
+        confidence: match.confidence,
+        message: match.message,
+        recommendedAction: match.recommendedAction,
+        status: "active",
+        timestamp: new Date().toISOString(),
+      };
+
+      // persist custom alert
+      try {
+        const dbAlert = await db.alert.create({
+          data: {
+            alertId: alert.alertId,
+            sessionId: active.session.id,
+            eventId: dbEventId ?? null,
+            ruleId: alert.ruleId,
+            ruleName: alert.ruleName,
+            severity: alert.severity,
+            confidence: alert.confidence,
+            message: alert.message,
+            recommendedAction: alert.recommendedAction,
+            status: alert.status,
+            timestamp: new Date(alert.timestamp),
+          },
+        });
+        alert.id = dbAlert.id;
+      } catch (err) {
+        console.error("[session] custom alert persist failed:", err);
+      }
+
+      // increment fired count on the custom rule
+      try {
+        await db.customRule.update({
+          where: { ruleId: match.rule.ruleId },
+          data: {
+            firedCount: { increment: 1 },
+            lastFired: new Date(),
+          },
+        });
+      } catch (err) {
+        console.error("[session] custom rule firedCount update failed:", err);
+      }
+
+      active.recentAlerts.push(alert);
+      if (active.recentAlerts.length > RECENT_ALERTS_CAP) {
+        active.recentAlerts.splice(0, active.recentAlerts.length - RECENT_ALERTS_CAP);
+      }
+      broadcastLocal(active, { type: "alert", alert });
+
+      await auditLog("info", "session", `Custom rule fired: ${match.rule.ruleId}`, {
+        sessionId: active.session.id,
+        ruleId: match.rule.ruleId,
+        ruleName: match.rule.name,
+        eventId: event.eventId,
+      });
+    }
+  }
+
   // recompute KPI + network activity
   active.kpi = computeKpi(
     active.recentEvents,
@@ -425,6 +517,49 @@ export const sessionManager = {
     const detectionCtx = createDetectionContext();
     const correlationState = createCorrelationState(idPrefix);
 
+    // 9a. load enabled custom rules from DB
+    let customRules: CustomRule[] = [];
+    try {
+      const ruleRows = await db.customRule.findMany({
+        where: { enabled: true },
+        orderBy: { createdAt: "desc" },
+      });
+      customRules = ruleRows.map((r) => {
+        let conditions: import("@/lib/types").RuleCondition[] = [];
+        try {
+          conditions = JSON.parse(r.conditions) as import("@/lib/types").RuleCondition[];
+        } catch {
+          conditions = [];
+        }
+        return {
+          id: r.id,
+          ruleId: r.ruleId,
+          name: r.name,
+          description: r.description,
+          severity: r.severity as import("@/lib/types").Severity,
+          enabled: r.enabled,
+          conditions,
+          threshold: r.threshold,
+          windowMs: r.windowMs,
+          confidence: r.confidence,
+          recommendedAction: r.recommendedAction,
+          firedCount: r.firedCount,
+          lastFired: r.lastFired?.toISOString() ?? null,
+          createdAt: r.createdAt.toISOString(),
+          updatedAt: r.updatedAt.toISOString(),
+        };
+      });
+      if (customRules.length > 0) {
+        await auditLog("info", "session", `Loaded ${customRules.length} custom rule(s) for session`, {
+          sessionId: dbSession.id,
+          ruleIds: customRules.map((r) => r.ruleId),
+        });
+      }
+    } catch (err) {
+      console.error("[session] failed to load custom rules:", err);
+    }
+    const customRuleCtx = createCustomRuleContext();
+
     // 10. telemetry generator
     const telemetry = createTelemetryGenerator({
       targetAddress,
@@ -447,6 +582,8 @@ export const sessionManager = {
       detectionCtx,
       correlationState,
       telemetry,
+      customRules,
+      customRuleCtx,
       subscribers: new Set(),
       eventCounter: { value: 0 },
       alertCounter: { value: 0 },

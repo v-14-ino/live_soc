@@ -1339,6 +1339,14 @@ function AlertCard({
       />
       <div className="flex items-center gap-2">
         <SeverityBadge severity={alert.severity} size="sm" />
+        {alert.ruleId.startsWith("CSTM") && (
+          <span
+            className="rounded-sm border border-[color:var(--soc-medium)]/40 bg-[color:var(--soc-medium)]/10 px-1 py-0.5 font-mono-data text-[8px] font-bold uppercase tracking-wider text-[color:var(--soc-medium)]"
+            title="Custom detection rule"
+          >
+            Custom
+          </span>
+        )}
         <AlertStatusBadge status={alert.status} />
         <span
           className={cn(
@@ -1542,6 +1550,14 @@ function GroupHeaderCard({
           {group.ruleId}
         </span>
         <SeverityBadge severity={topSev} size="sm" />
+        {group.ruleId.startsWith("CSTM") && (
+          <span
+            className="rounded-sm border border-[color:var(--soc-medium)]/40 bg-[color:var(--soc-medium)]/10 px-1 py-0.5 font-mono-data text-[8px] font-bold uppercase tracking-wider text-[color:var(--soc-medium)]"
+            title="Custom detection rule"
+          >
+            Custom
+          </span>
+        )}
       </div>
 
       {/* Row 2: rule name */}

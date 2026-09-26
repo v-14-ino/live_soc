@@ -1740,3 +1740,89 @@ A complete user-defined detection rules system that runs alongside the 8 built-i
 3. **Add a "Replay Live" mode** in History — simulate real-time playback of a historical session.
 4. **Add dashboard customization** — drag-and-drop panel rearrangement in Live Monitor.
 5. **Add threat intel feed integration** — external reputation enrichment for source IPs.
+
+---
+Task ID: REVIEW-7 (cron-triggered webDevReview)
+Agent: orchestrator (main)
+Task: QA testing, wire custom rules into live monitoring (threshold/window tracking + alert generation + Custom badge)
+
+## Current Project Status Assessment
+- All 3 services healthy: Next.js (:3000), monitor-service (:3003), Caddy gateway (:81).
+- Full end-to-end flow verified via agent-browser — no console errors, no bugs found in QA.
+- 0 lint errors, 0 warnings.
+- All 6 views functional. All prior rounds' features still working.
+- **Note:** The monitor-service had to be restarted (it was killed by SIGKILL from a prior session). Restarted cleanly on PID 5177. The `bun --hot` flag auto-reloads on file changes, but a hard kill requires manual restart.
+
+## Completed Modifications
+
+### 1. Custom Rules Wired Into Live Monitoring (the key missing piece from REVIEW-6)
+
+The custom rules engine (`evaluateCustomRules` from REVIEW-6) is now fully integrated into the session manager — custom rules actually fire alerts during live monitoring.
+
+**New file: `src/lib/monitoring/custom-rule-context.ts`**
+- `CustomRuleContext` — tracks match timestamps per rule + last-fired timestamps for cooldown
+- `createCustomRuleContext()` — factory
+- `checkCustomRuleFiring(ctx, rule, nowMs)` — records a match, prunes timestamps outside `windowMs`, checks cooldown (5s min between fires), returns true when `>= threshold` matches within the window AND cooldown elapsed. Resets timestamps after firing to avoid immediate re-fire.
+- This provides the threshold/window tracking that was missing from the per-event `evaluateCustomRules`.
+
+**Modified: `src/lib/monitoring/session.ts`**
+- Added imports: `evaluateCustomRules`, `createCustomRuleContext`, `checkCustomRuleFiring`, `CustomRuleContext`, `CustomRule` type.
+- Added `customRules: CustomRule[]` and `customRuleCtx: CustomRuleContext` fields to the `ActiveSession` interface.
+- In `startSession`: loads enabled custom rules from the DB (`db.customRule.findMany({ where: { enabled: true } })`), deserializes conditions JSON, creates the `CustomRuleContext`, audit-logs the loaded rule count.
+- In `processEvent`: after the built-in detection loop, runs `evaluateCustomRules(event, active.customRules)`. For each match, calls `checkCustomRuleFiring` to check threshold/window/cooldown. If it should fire:
+  1. Generates a `SecurityAlert` with `ruleId: match.rule.ruleId` (CSTM-NNNN) and `ruleName: "[Custom] " + rule.name` (clearly labeled)
+  2. Persists the alert to the DB (`db.alert.create`)
+  3. Increments the custom rule's `firedCount` + sets `lastFired` in the DB (`db.customRule.update`)
+  4. Pushes to `recentAlerts`, broadcasts `alert` WS message
+  5. Audit-logs the fire event
+
+### 2. "Custom" Badge in Live Alerts Panel
+
+**Modified: `src/components/views/live-monitor-view.tsx`**
+- `AlertCard` component: when `alert.ruleId.startsWith("CSTM")`, shows an amber "CUSTOM" badge (var(--soc-medium)) between the severity badge and status badge, with `title="Custom detection rule"`.
+- `GroupHeaderCard` component: same "CUSTOM" badge next to the ruleId when the group's ruleId starts with "CSTM".
+- This makes custom rule alerts visually distinguishable from built-in rule alerts (RULE-001..008) at a glance.
+
+### Verification (end-to-end via agent-browser)
+- Started monitoring on 192.168.1.100 in demo mode.
+- The existing custom rule "SSH Brute Force from Lab" (CSTM-5n4j2r, sourceIp equals 192.168.10.20, threshold 3, window 60s, severity high) was loaded on session start.
+- During Phase 3 of demo telemetry (~40s in), SSH auth failures from 192.168.10.20 began arriving.
+- The custom rule fired 4 times (visible in the Live Alerts panel as a grouped card):
+  - `CSTM-5N4J2R` badge
+  - `HIGH` severity badge
+  - `CUSTOM` amber badge (new)
+  - `[Custom] SSH Brute Force from Lab` rule name
+  - `4 ALERTS · 4 ACTIVE · 0 ACK · 0 RESOLVED`
+  - `08:02:00 → 08:02:18 · 18S` time range
+  - `ACK ALL (4)` / `RESOLVE ALL` bulk buttons
+- DB verification: `firedCount` went from 0 to 5, `lastFired` timestamp set.
+- No console errors throughout.
+
+## Verification Results
+- `bun run lint`: 0 errors, 0 warnings
+- `dev.log`: clean compiles, no errors
+- agent-browser E2E through gateway (:81):
+  - Custom rule loaded on session start ✓
+  - Custom rule fires during Phase 3 (SSH brute force) ✓
+  - Alert appears in Live Alerts panel with CUSTOM badge ✓
+  - Grouped card shows 4 alerts with bulk ack/resolve ✓
+  - firedCount incremented in DB (0 → 5) ✓
+  - No console errors ✓
+- All services healthy (HTTP 200)
+
+## Files Modified/Created This Round
+- `src/lib/monitoring/custom-rule-context.ts` (new) — threshold/window/cooldown tracking
+- `src/lib/monitoring/session.ts` — wired custom rules: load on start, evaluate in processEvent, generate alerts, increment firedCount
+- `src/components/views/live-monitor-view.tsx` — "CUSTOM" badge on AlertCard + GroupHeaderCard for CSTM-* rule IDs
+
+## Unresolved Issues / Risks
+- **None critical.** Custom rules are now fully functional end-to-end: create via UI → loaded on session start → evaluated per-event → threshold/window tracked → alerts generated + persisted + broadcast → firedCount incremented → visual badge in UI.
+- The monitor-service must be running for custom rules to fire (it owns the sessionManager). If it crashes, restart with `cd /home/z/my-project/mini-services/monitor-service && bun run dev`.
+- Custom rule alerts don't generate offense/defense scenarios (only built-in rules do, via the correlation engine). This is by design — custom rules produce alerts only, keeping the scenario model focused on the 8 built-in patterns. A future enhancement could map custom rules to custom scenarios.
+
+## Priority Recommendations for Next Phase
+1. **Add a "Replay Live" mode** in History — simulate real-time playback of a historical session with WS-like event streaming into the Live Monitor view.
+2. **Add dashboard customization** — drag-and-drop panel rearrangement in Live Monitor.
+3. **Add threat intel feed integration** — external reputation enrichment for source IPs.
+4. **Add custom rule templates** — pre-built rule templates (e.g. "Detect SSH brute force", "Detect port scan from specific IP") that users can one-click create + customize.
+5. **Add a notification system** — browser notifications or webhook integration when high-severity alerts fire.
