@@ -18,6 +18,7 @@ import {
 import { useAppStore } from "@/lib/store";
 import { api } from "@/lib/api-client";
 import { AuthWarning } from "@/components/soc/auth-warning";
+import { TelemetryAdaptersPanel } from "@/components/soc/telemetry-adapters-panel";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -440,38 +441,38 @@ export function SettingsView() {
           {/* TELEMETRY COLLECTORS */}
           <SectionCard
             title="Telemetry Collectors"
-            description="Which telemetry sources to ingest during monitoring."
+            description="Real telemetry adapters + enable/disable toggles for each source."
             icon={Radar}
           >
-            <ToggleRow
-              label="Network Collector"
-              description="Network connection telemetry (connection events, protocol distribution)."
-              checked={local.enableNetworkCollector}
-              onChange={(v) => update("enableNetworkCollector", v)}
-            />
-            <ToggleRow
-              label="System Logs Collector"
-              description="Linux/Windows system log events (auth, service logs)."
-              checked={local.enableSystemLogsCollector}
-              onChange={(v) => update("enableSystemLogsCollector", v)}
-            />
-            <ToggleRow
-              label="Web Logs Collector"
-              description="Web server access/error logs."
-              checked={local.enableWebLogsCollector}
-              onChange={(v) => update("enableWebLogsCollector", v)}
-            />
-            <ToggleRow
-              label="Firewall Collector"
-              description="Firewall allow/deny events."
-              checked={local.enableFirewallCollector}
-              onChange={(v) => update("enableFirewallCollector", v)}
-            />
-            <ToggleRow
-              label="IDS Collector"
-              description="IDS alert telemetry (if available)."
-              checked={local.enableIdsCollector}
-              onChange={(v) => update("enableIdsCollector", v)}
+            <TelemetryAdaptersPanel
+              defaultTarget={local.demoMode ? "192.168.1.100" : "192.168.1.100"}
+              toggles={{
+                nmap: {
+                  settingsKey: "enableNetworkCollector",
+                  enabled: local.enableNetworkCollector,
+                  onToggle: (v) => update("enableNetworkCollector", v),
+                },
+                journald: {
+                  settingsKey: "enableSystemLogsCollector",
+                  enabled: local.enableSystemLogsCollector,
+                  onToggle: (v) => update("enableSystemLogsCollector", v),
+                },
+                nginx: {
+                  settingsKey: "enableWebLogsCollector",
+                  enabled: local.enableWebLogsCollector,
+                  onToggle: (v) => update("enableWebLogsCollector", v),
+                },
+                iptables: {
+                  settingsKey: "enableFirewallCollector",
+                  enabled: local.enableFirewallCollector,
+                  onToggle: (v) => update("enableFirewallCollector", v),
+                },
+                suricata: {
+                  settingsKey: "enableIdsCollector",
+                  enabled: local.enableIdsCollector,
+                  onToggle: (v) => update("enableIdsCollector", v),
+                },
+              }}
             />
           </SectionCard>
 

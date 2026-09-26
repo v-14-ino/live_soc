@@ -3,8 +3,16 @@
 import { useMemo, useState, useRef, useCallback, useEffect } from "react";
 import type { SecurityEvent } from "@/lib/types";
 import { severityColor } from "@/lib/constants";
-import { Play, Pause, SkipBack, SkipForward, Clock, Repeat } from "lucide-react";
+import { Play, Pause, SkipBack, SkipForward, Clock, Repeat, Gauge } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuLabel,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
 
 interface TimelineScrubberProps {
   events: SecurityEvent[];
@@ -21,7 +29,16 @@ interface TimelineScrubberProps {
 // ============================================================
 
 const BUCKET_COUNT = 60; // 60 buckets across the timeline
-const PLAY_INTERVAL_MS = 200; // 200ms per bucket during playback
+const BASE_INTERVAL_MS = 200; // base interval per bucket at 1x speed
+
+type PlaybackSpeed = 0.5 | 1 | 2 | 4;
+const SPEEDS: PlaybackSpeed[] = [0.5, 1, 2, 4];
+const SPEED_LABEL: Record<PlaybackSpeed, string> = {
+  0.5: "0.5×",
+  1: "1×",
+  2: "2×",
+  4: "4×",
+};
 
 export function TimelineScrubber({ events, onScrub, className }: TimelineScrubberProps) {
   const sortedEvents = useMemo(
@@ -51,8 +68,11 @@ export function TimelineScrubber({ events, onScrub, className }: TimelineScrubbe
   const [playhead, setPlayhead] = useState(1); // 0..1 (fraction of timeline)
   const [playing, setPlaying] = useState(false);
   const [loop, setLoop] = useState(false);
+  const [speed, setSpeed] = useState<PlaybackSpeed>(1);
   const barRef = useRef<HTMLDivElement>(null);
   const draggingRef = useRef(false);
+
+  const intervalMs = Math.round(BASE_INTERVAL_MS / speed);
 
   // Events up to the playhead
   const visibleEvents = useMemo(() => {
@@ -82,9 +102,9 @@ export function TimelineScrubber({ events, onScrub, className }: TimelineScrubbe
         }
         return next;
       });
-    }, PLAY_INTERVAL_MS);
+    }, intervalMs);
     return () => clearInterval(id);
-  }, [playing, sortedEvents.length, loop]);
+  }, [playing, sortedEvents.length, loop, intervalMs]);
 
   // Scrub via pointer
   const handlePointer = useCallback((clientX: number) => {
@@ -197,6 +217,35 @@ export function TimelineScrubber({ events, onScrub, className }: TimelineScrubbe
         >
           <Repeat className="h-3 w-3" />
         </Button>
+        <DropdownMenu>
+          <DropdownMenuTrigger asChild>
+            <Button
+              size="sm"
+              variant="outline"
+              className="h-7 gap-1.5 px-2 text-[11px] font-mono-data"
+              title="Playback speed"
+            >
+              <Gauge className="h-3 w-3" />
+              {SPEED_LABEL[speed]}
+            </Button>
+          </DropdownMenuTrigger>
+          <DropdownMenuContent align="start" className="w-28">
+            <DropdownMenuLabel className="font-mono-data text-[9px] uppercase tracking-wider text-muted-foreground">
+              Speed
+            </DropdownMenuLabel>
+            <DropdownMenuSeparator />
+            {SPEEDS.map((s) => (
+              <DropdownMenuItem
+                key={s}
+                onClick={() => setSpeed(s)}
+                className={`gap-2 text-xs ${s === speed ? "text-[color:var(--soc-low)]" : ""}`}
+              >
+                <span className="font-mono-data">{SPEED_LABEL[s]}</span>
+                {s === speed && <span className="ml-auto text-[10px]">✓</span>}
+              </DropdownMenuItem>
+            ))}
+          </DropdownMenuContent>
+        </DropdownMenu>
       </div>
 
       {/* Timeline bar */}

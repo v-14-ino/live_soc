@@ -12,6 +12,7 @@ import type {
   ReportInfo,
   AppSettings,
 } from "@/lib/types";
+import type { AdapterConfig, AdapterInfo } from "@/lib/monitoring/adapters";
 
 export interface StartMonitoringResponse {
   sessionId: string;
@@ -200,4 +201,24 @@ export const api = {
     http<{ targets: { address: string; hostname: string | null; lastAssessedAt: string | null }[] }>(
       "/api/targets",
     ),
+
+  // ---- Telemetry Adapters ----
+
+  getAdapters: (force = false) =>
+    http<{
+      adapters: AdapterInfo[];
+      summary: { available: number; total: number };
+      cached: boolean;
+    }>(`/api/adapters${force ? "?force=1" : ""}`),
+
+  getAdapter: (name: string, force = false) =>
+    http<{ adapter: AdapterInfo }>(
+      `/api/adapters/${encodeURIComponent(name)}${force ? "?force=1" : ""}`,
+    ),
+
+  testAdapter: (name: string, config: AdapterConfig) =>
+    http<{ valid: boolean; issues: string[]; name: string }>("/api/adapters", {
+      method: "POST",
+      body: JSON.stringify({ name, config }),
+    }),
 };

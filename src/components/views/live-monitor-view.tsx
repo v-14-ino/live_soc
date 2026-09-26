@@ -48,6 +48,8 @@ import { AuthWarning } from "@/components/soc/auth-warning";
 import { EventDetailDrawer } from "@/components/soc/event-detail-drawer";
 import { ExportMenu } from "@/components/soc/export-menu";
 import { ThreatMapPanel } from "@/components/soc/threat-map-panel";
+import { RiskGaugePanel } from "@/components/soc/risk-gauge-panel";
+import { MitreMatrixPanel } from "@/components/soc/mitre-matrix-panel";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import {
@@ -1955,6 +1957,16 @@ function ThreatMapSection() {
   );
 }
 
+function RiskGaugeSection() {
+  const alerts = useAppStore((s) => s.alerts);
+  return <RiskGaugePanel alerts={alerts} />;
+}
+
+function MitreMatrixSection() {
+  const scenarios = useAppStore((s) => s.offenseScenarios);
+  return <MitreMatrixPanel scenarios={scenarios} />;
+}
+
 export function LiveMonitorView() {
   return (
     <div className="flex h-full flex-col overflow-hidden">
@@ -1974,6 +1986,10 @@ export function LiveMonitorView() {
           <div className="grid grid-cols-1 gap-3 xl:grid-cols-2">
             <NetworkActivityPanel />
             <ThreatMapSection />
+          </div>
+          <div className="grid grid-cols-1 gap-3 lg:grid-cols-2">
+            <RiskGaugeSection />
+            <MitreMatrixSection />
           </div>
         </div>
       </div>
