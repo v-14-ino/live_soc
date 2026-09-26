@@ -272,4 +272,11 @@ export const api = {
     http<{ ok: boolean; status?: number; message: string }>(`/api/webhooks/${encodeURIComponent(webhookId)}`, {
       method: "POST",
     }),
+
+  getWebhookDeliveries: (webhookId: string, limit = 50) =>
+    http<{
+      webhookId: string;
+      deliveries: WebhookDelivery[];
+      total: number;
+    }>(`/api/webhooks/${encodeURIComponent(webhookId)}/deliveries?limit=${limit}`),
 };

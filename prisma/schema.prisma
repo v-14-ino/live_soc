@@ -305,4 +305,35 @@ model WebhookConfig {
   lastError   String?
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
+
+  deliveries WebhookDelivery[]
+}
+
+// ============================================================
+// Webhook Delivery History (log of each webhook call)
+// ============================================================
+model WebhookDelivery {
+  id          String   @id @default(cuid())
+  webhookId   String
+  webhook     WebhookConfig @relation(fields: [webhookId], references: [id], onDelete: Cascade)
+  // The alert that triggered this delivery
+  alertId     String?
+  // "alert" | "test"
+  eventType   String   @default("alert")
+  // HTTP status code (null if network error)
+  statusCode  Int?
+  // "success" | "failed" | "timeout" | "error"
+  status      String
+  // Response body excerpt (first 500 chars, for debugging)
+  responseExcerpt String?
+  // Error message if failed
+  errorMessage String?
+  // Round-trip latency in ms
+  latencyMs   Int?
+  // The payload that was sent (JSON, capped at 4KB)
+  payload     String
+  calledAt    DateTime @default(now())
+
+  @@index([webhookId])
+  @@index([calledAt])
 }

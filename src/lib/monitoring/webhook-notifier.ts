@@ -99,6 +99,7 @@ export async function notifyWebhooks(
     };
 
     const body = JSON.stringify(payload);
+    const startedAt = Date.now();
 
     try {
       const headers: Record<string, string> = {
@@ -129,11 +130,15 @@ export async function notifyWebhooks(
 
       clearTimeout(timeout);
 
+      const latencyMs = Date.now() - startedAt;
+      const responseText = await res.text().catch(() => "");
+      const responseExcerpt = responseText.slice(0, 500) || null;
+
       if (!res.ok) {
         throw new Error(`HTTP ${res.status} ${res.statusText}`);
       }
 
-      // Success — update DB
+      // Success — update config + log delivery
       await db.webhookConfig.update({
         where: { id: wh.id },
         data: {
@@ -143,15 +148,32 @@ export async function notifyWebhooks(
         },
       });
 
+      await db.webhookDelivery.create({
+        data: {
+          webhookId: wh.id,
+          alertId: alert.alertId,
+          eventType: "alert",
+          statusCode: res.status,
+          status: "success",
+          responseExcerpt,
+          latencyMs,
+          payload: body.slice(0, 4096),
+        },
+      }).catch(() => { /* ignore delivery log errors */ });
+
       await auditLog("info", "webhook", `Webhook delivered: ${wh.name}`, {
         webhookId: wh.id,
         alertId: alert.alertId,
         status: res.status,
+        latencyMs,
       });
-    } catch (err) {
-      const errMsg = err instanceof Error ? err.message : "Unknown error";
+    } catch (fetchErr) {
+      const errMsg = fetchErr instanceof Error ? fetchErr.message : "Unknown error";
+      const latencyMs = Date.now() - startedAt;
+      const isTimeout = fetchErr instanceof Error && fetchErr.name === "AbortError";
+      const deliveryStatus = isTimeout ? "timeout" : "error";
 
-      // Update DB with failure
+      // Update config with failure
       try {
         await db.webhookConfig.update({
           where: { id: wh.id },
@@ -166,10 +188,25 @@ export async function notifyWebhooks(
         // ignore DB errors
       }
 
+      // Log delivery failure
+      await db.webhookDelivery.create({
+        data: {
+          webhookId: wh.id,
+          alertId: alert.alertId,
+          eventType: "alert",
+          statusCode: null,
+          status: deliveryStatus,
+          errorMessage: errMsg.slice(0, 500),
+          latencyMs,
+          payload: body.slice(0, 4096),
+        },
+      }).catch(() => { /* ignore delivery log errors */ });
+
       await auditLog("warning", "webhook", `Webhook failed: ${wh.name}`, {
         webhookId: wh.id,
         alertId: alert.alertId,
         error: errMsg,
+        latencyMs,
       });
     }
   }

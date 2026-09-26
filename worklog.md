@@ -2048,3 +2048,92 @@ A complete webhook notification system that fires HTTP POST requests to configur
 3. **Add threat intel feed integration** — external reputation enrichment for source IPs.
 4. **Add webhook delivery history** — a log view showing recent webhook calls (payload, response, latency) for debugging.
 5. **Add scheduled report generation** — automatically generate + email reports on a schedule (daily/weekly).
+
+---
+Task ID: REVIEW-10 (cron-triggered webDevReview)
+Agent: orchestrator (main)
+Task: QA testing, Webhook Delivery History log (recent calls with payload, response, latency)
+
+## Current Project Status Assessment
+- All 3 services healthy: Next.js (:3000), monitor-service (:3003), Caddy gateway (:81).
+- Full end-to-end flow verified via agent-browser — no console errors, no bugs found in QA.
+- 0 lint errors, 0 warnings.
+- All 6 views functional. All prior rounds' features still working.
+- **Bug found & fixed during QA:** The Prisma client singleton was cached before the `WebhookDelivery` model was added, causing `db.webhookDelivery` to be undefined (500 errors). Fixed by restarting the Next.js dev server. Same development-only caching issue as REVIEW-6/9.
+
+## Completed Modifications
+
+### 1. New Feature: Webhook Delivery History (full delivery log with payload, response, latency)
+
+A complete delivery history system that logs every webhook call for debugging and auditing.
+
+**New Prisma model: `WebhookDelivery`** — webhookId (relation to WebhookConfig, cascade delete), alertId, eventType ("alert"|"test"), statusCode, status ("success"|"failed"|"timeout"|"error"), responseExcerpt (first 500 chars), errorMessage, latencyMs, payload (JSON, capped at 4KB), calledAt. Indexed on webhookId + calledAt.
+
+**Modified: `src/lib/monitoring/webhook-notifier.ts`**
+- `notifyWebhooks` now measures latency (`Date.now()` before/after fetch), captures the response body excerpt (first 500 chars via `res.text()`), and creates a `WebhookDelivery` row for every call — success or failure.
+- Success: logs delivery with statusCode, status="success", responseExcerpt, latencyMs, payload.
+- Failure: logs delivery with status="timeout" (if AbortError) or "error", errorMessage, latencyMs, payload.
+- Delivery logging is wrapped in `.catch()` so it never breaks the alert pipeline.
+
+**New API route: `src/app/api/webhooks/[webhookId]/deliveries/route.ts`**
+- `GET` → paginated delivery history (newest first, default 50, max 200). Returns `{ webhookId, deliveries: [...], total }`.
+- Each delivery: id, webhookId, alertId, eventType, statusCode, status, responseExcerpt, errorMessage, latencyMs, payload, calledAt.
+
+**New file: `src/components/soc/webhook-delivery-history.tsx`**
+- `WebhookDeliveryHistory` dialog (max-w-3xl) with:
+  - Header: webhook name + summary ("16 total deliveries · 16 succeeded · 0 failed")
+  - Refresh button
+  - Scrollable list of delivery rows, each showing: status icon (CheckCircle2/XCircle/Clock/AlertTriangle), status badge (colored), HTTP status code, alert ID, latency (ms), timestamp, expand chevron
+  - Expanded view: Error message (red, if any), Response excerpt (mono pre), Payload (pretty-printed JSON, mono pre, scrollable)
+  - Empty state: "No deliveries yet"
+  - Status colors: success=green, failed=red, timeout=orange, error=red
+
+**Modified: `src/components/soc/webhooks-panel.tsx`**
+- Added "History" button (History icon) to each webhook card's action row (between Test and Edit)
+- Added `historyWebhook` state + renders `WebhookDeliveryHistory` dialog when set
+
+**Modified: `src/lib/types.ts`** — added `WebhookDelivery` interface.
+**Modified: `src/lib/api-client.ts`** — added `getWebhookDeliveries(webhookId, limit)` method.
+
+### Verification (end-to-end via agent-browser + real webhook deliveries)
+- Started monitoring session → SSH brute force phase triggered custom rule (CSTM-5n4j2r) → alerts generated → webhooks fired → **16 deliveries logged** to httpbin.org/post
+- All 16 deliveries: status=success, statusCode=200, latency ~200-320ms
+- Opened Settings → Webhook card → History button → Delivery History dialog
+- Dialog shows: "16 total deliveries · 16 succeeded · 0 failed"
+- Delivery rows: SUCCESS badge (green), HTTP 200, latency (224ms, 275ms), alert ID (ALR-cmui4hcs-XXXXX), timestamp
+- Expanded a delivery: shows RESPONSE (httpbin echo) + PAYLOAD (pretty-printed JSON with platform, event, alert details including ruleId CSTM-5n4j2r, ruleName "[Custom] SSH Brute Force from Lab", severity high, confidence 80, message, recommendedAction, timestamp, eventId)
+- No console errors throughout.
+
+## Verification Results
+- `bun run lint`: 0 errors, 0 warnings
+- `dev.log`: clean compiles after server restart, no errors
+- agent-browser E2E through gateway (:81):
+  - History button on webhook card ✓
+  - Delivery History dialog opens with summary ✓
+  - 16 deliveries listed with status/latency/alert ID ✓
+  - Expand shows payload + response ✓
+  - No console errors ✓
+- curl API: `GET /api/webhooks/[id]/deliveries` returns 16 deliveries with full details ✓
+- All services healthy (HTTP 200)
+
+## Files Modified/Created This Round
+- `prisma/schema.prisma` — added WebhookDelivery model + relation to WebhookConfig
+- `src/lib/types.ts` — added WebhookDelivery interface
+- `src/lib/monitoring/webhook-notifier.ts` — log each delivery (success/failure) with latency, response, payload
+- `src/app/api/webhooks/[webhookId]/deliveries/route.ts` (new) — GET delivery history
+- `src/lib/api-client.ts` — added getWebhookDeliveries method
+- `src/components/soc/webhook-delivery-history.tsx` (new) — delivery history dialog with expandable rows
+- `src/components/soc/webhooks-panel.tsx` — History button + dialog integration
+
+## Unresolved Issues / Risks
+- **None critical.** Delivery history working end-to-end with real webhook calls.
+- The Prisma singleton caching issue recurred (db.webhookDelivery undefined after schema update) — required a dev server restart. This is a development-only concern.
+- Delivery payload is capped at 4KB and response excerpt at 500 chars to prevent unbounded DB growth. For very large payloads, the full payload is truncated.
+- No automatic cleanup of old delivery records — they accumulate indefinitely. A future enhancement could add a retention policy (e.g. delete deliveries older than 30 days) or a "clear history" button.
+
+## Priority Recommendations for Next Phase
+1. **Add a "Replay Live" mode** in History — simulate real-time playback of a historical session with WS-like event streaming into the Live Monitor view.
+2. **Add dashboard customization** — drag-and-drop panel rearrangement in Live Monitor.
+3. **Add threat intel feed integration** — external reputation enrichment for source IPs.
+4. **Add a delivery history retention policy** — auto-delete deliveries older than N days + a "clear history" button.
+5. **Add scheduled report generation** — automatically generate + email reports on a schedule (daily/weekly).

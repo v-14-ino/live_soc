@@ -25,8 +25,10 @@ import {
   CheckCircle2,
   XCircle,
   Loader2,
+  History,
 } from "lucide-react";
 import { toast } from "sonner";
+import { WebhookDeliveryHistory } from "@/components/soc/webhook-delivery-history";
 
 const ALL_SEVERITIES: Severity[] = ["critical", "high", "medium", "low", "info"];
 
@@ -36,6 +38,7 @@ export function WebhooksPanel() {
   const [showEditor, setShowEditor] = useState(false);
   const [editingWebhook, setEditingWebhook] = useState<WebhookConfig | null>(null);
   const [testing, setTesting] = useState<string | null>(null);
+  const [historyWebhook, setHistoryWebhook] = useState<WebhookConfig | null>(null);
 
   const fetchWebhooks = useCallback(async () => {
     setLoading(true);
@@ -217,6 +220,15 @@ export function WebhooksPanel() {
                     size="sm"
                     variant="ghost"
                     className="h-7 w-7 p-0"
+                    onClick={() => setHistoryWebhook(wh)}
+                    title="View delivery history"
+                  >
+                    <History className="h-3 w-3" />
+                  </Button>
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    className="h-7 w-7 p-0"
                     onClick={() => handleEdit(wh)}
                     title="Edit webhook"
                   >
@@ -246,6 +258,15 @@ export function WebhooksPanel() {
             setEditingWebhook(null);
           }}
           onSaved={handleSaved}
+        />
+      )}
+
+      {historyWebhook && (
+        <WebhookDeliveryHistory
+          webhookId={historyWebhook.id}
+          webhookName={historyWebhook.name}
+          open={true}
+          onOpenChange={(o) => { if (!o) setHistoryWebhook(null); }}
         />
       )}
     </div>

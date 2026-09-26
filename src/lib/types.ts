@@ -208,6 +208,20 @@ export interface WebhookInput {
   cooldownSec?: number;
 }
 
+export interface WebhookDelivery {
+  id: string;
+  webhookId: string;
+  alertId?: string | null;
+  eventType: string; // "alert" | "test"
+  statusCode?: number | null;
+  status: string; // "success" | "failed" | "timeout" | "error"
+  responseExcerpt?: string | null;
+  errorMessage?: string | null;
+  latencyMs?: number | null;
+  payload: string;
+  calledAt: string;
+}
+
 // ============================================================
 // Scenarios
 // ============================================================
