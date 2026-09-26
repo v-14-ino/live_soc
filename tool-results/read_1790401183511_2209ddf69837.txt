@@ -1,0 +1,596 @@
+   600→   600→            <Activity className="h-3.5 w-3.5 opacity-50" />
+   601→   601→            <span>
+   602→   602→              No matching event records available
+   603→   603→              {sessionMode === "live"
+   604→   604→                ? " in the current live window. Older events may have aged out."
+   605→   605→                : "."}
+   606→   606→            </span>
+   607→   607→          </div>
+   608→   608→        ) : (
+   609→   609→          <div className="soc-scrollbar max-h-64 overflow-y-auto rounded-md border border-border/40 bg-card/20">
+   610→   610→            {relatedEvents.map((e, i) => (
+   611→   611→              <div
+   612→   612→                key={e.id}
+   613→   613→                className="flex items-start gap-2 border-b border-border/20 px-2.5 py-1.5 last:border-b-0"
+   614→   614→              >
+   615→   615→                <div className="flex flex-col items-center pt-0.5">
+   616→   616→                  <span
+   617→   617→                    className="font-mono-data text-[9px] tabular-nums text-muted-foreground"
+   618→   618→                    title={formatDateTime(e.timestamp)}
+   619→   619→                  >
+   620→   620→                    {formatTime(e.timestamp)}
+   621→   621→                  </span>
+   622→   622→                  {i < relatedEvents.length - 1 && (
+   623→   623→                    <span className="mt-0.5 h-3 w-px bg-border/60" aria-hidden />
+   624→   624→                  )}
+   625→   625→                </div>
+   626→   626→                <div className="min-w-0 flex-1">
+   627→   627→                  <div className="flex items-center gap-1.5">
+   628→   628→                    <SeverityBadge severity={e.severity} size="sm" />
+   629→   629→                    <span className="truncate font-mono-data text-[10px] text-muted-foreground">
+   630→   630→                      {e.eventId}
+   631→   631→                    </span>
+   632→   632→                  </div>
+   633→   633→                  <div className="mt-0.5 flex items-center gap-1 font-mono-data text-[10px] text-foreground/80">
+   634→   634→                    <span className="truncate">{e.sourceIp ?? "?"}</span>
+   635→   635→                    <ArrowDown className="h-3 w-3 rotate-[-90deg] text-muted-foreground/40" />
+   636→   636→                    <span className="truncate">
+   637→   637→                      {e.destIp ?? "?"}
+   638→   638→                      {e.destPort ? `:${e.destPort}` : ""}
+   639→   639→                    </span>
+   640→   640→                    <span className="ml-1 rounded-sm border border-border/40 bg-muted/30 px-1 py-0.5 text-[9px] uppercase">
+   641→   641→                      {e.protocol ?? "?"}
+   642→   642→                    </span>
+   643→   643→                  </div>
+   644→   644→                  <div className="mt-0.5 text-[11px] leading-snug text-foreground/70">
+   645→   645→                    <span className="font-mono-data text-[10px] text-muted-foreground">
+   646→   646→                      [{e.eventType}]
+   647→   647→                    </span>{" "}
+   648→   648→                    {e.message}
+   649→   649→                  </div>
+   650→   650→                </div>
+   651→   651→              </div>
+   652→   652→            ))}
+   653→   653→          </div>
+   654→   654→        )}
+   655→   655→      </section>
+   656→   656→
+   657→   657→      {/* Potential attack path */}
+   658→   658→      <section>
+   659→   659→        <SectionLabel>Potential Attack Path</SectionLabel>
+   660→   660→        <div className="mt-1.5 rounded-md border border-border/40 bg-card/30 p-2.5">
+   661→   661→          <AttackPathFlow steps={steps} color={color} />
+   662→   662→        </div>
+   663→   663→      </section>
+   664→   664→
+   665→   665→      {/* Possible impact */}
+   666→   666→      <section>
+   667→   667→        <SectionLabel>Possible Impact</SectionLabel>
+   668→   668→        <p className="mt-1 text-xs leading-relaxed text-foreground/80">
+   669→   669→          {scenario.potentialImpact ?? "Possible impact assessment pending."}
+   670→   670→        </p>
+   671→   671→      </section>
+   672→   672→
+   673→   673→      {/* MITRE ATT&CK */}
+   674→   674→      {scenario.techniqueMitre && (
+   675→   675→        <section>
+   676→   676→          <SectionLabel>Related MITRE ATT&CK Technique</SectionLabel>
+   677→   677→          <div className="mt-1.5 flex flex-col gap-1.5 rounded-md border border-border/40 bg-card/30 p-2.5">
+   678→   678→            <div className="flex items-center gap-2">
+   679→   679→              <span
+   680→   680→                className="rounded-sm border px-1.5 py-0.5 font-mono-data text-[10px] font-bold"
+   681→   681→                style={{
+   682→   682→                  color,
+   683→   683→                  borderColor: `color-mix(in oklch, ${color} 40%, transparent)`,
+   684→   684→                  backgroundColor: `color-mix(in oklch, ${color} 12%, transparent)`,
+   685→   685→                }}
+   686→   686→              >
+   687→   687→                {scenario.techniqueMitre}
+   688→   688→              </span>
+   689→   689→              <span className="text-xs font-semibold text-foreground/90">
+   690→   690→                {mitre?.name ?? scenario.technique ?? "Unknown technique"}
+   691→   691→              </span>
+   692→   692→            </div>
+   693→   693→            {mitre && (
+   694→   694→              <p className="text-[11px] leading-snug text-muted-foreground">
+   695→   695→                {mitre.description}
+   696→   696→              </p>
+   697→   697→            )}
+   698→   698→            <p className="text-[10px] italic text-muted-foreground/70">
+   699→   699→              Potential technique attribution based on observed pattern — not a
+   700→   700→              confirmed adversary action.
+   701→   701→            </p>
+   702→   702→          </div>
+   703→   703→        </section>
+   704→   704→      )}
+   705→   705→
+   706→   706→      {/* Timeline summary */}
+   707→   707→      <section className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+   708→   708→        <div className="rounded-md border border-border/40 bg-card/30 p-2.5">
+   709→   709→          <SectionLabel>First Observed</SectionLabel>
+   710→   710→          <div className="mt-0.5 font-mono-data text-[11px] text-foreground/90">
+   711→   711→            {formatDateTime(scenario.firstObserved)}
+   712→   712→          </div>
+   713→   713→        </div>
+   714→   714→        <div className="rounded-md border border-border/40 bg-card/30 p-2.5">
+   715→   715→          <SectionLabel>Last Observed</SectionLabel>
+   716→   716→          <div className="mt-0.5 font-mono-data text-[11px] text-foreground/90">
+   717→   717→            {formatDateTime(scenario.lastObserved)}
+   718→   718→          </div>
+   719→   719→        </div>
+   720→   720→        <div className="rounded-md border border-border/40 bg-card/30 p-2.5">
+   721→   721→          <SectionLabel>Duration</SectionLabel>
+   722→   722→          <div className="mt-0.5 font-mono-data text-[11px] text-foreground/90">
+   723→   723→            {durationLabel(scenario.firstObserved, scenario.lastObserved)}
+   724→   724→          </div>
+   725→   725→        </div>
+   726→   726→        <div className="rounded-md border border-border/40 bg-card/30 p-2.5">
+   727→   727→          <SectionLabel>Events / Sources</SectionLabel>
+   728→   728→          <div className="mt-0.5 font-mono-data text-[11px] text-foreground/90">
+   729→   729→            {scenario.eventCount} / {scenario.sourceCount}
+   730→   730→          </div>
+   731→   731→        </div>
+   732→   732→      </section>
+   733→   733→    </div>
+   734→   734→  );
+   735→   735→}
+   736→   736→
+   737→   737→function ScenarioDetailDialog({
+   738→   738→  scenario,
+   739→   739→  open,
+   740→   740→  onOpenChange,
+   741→   741→  events,
+   742→   742→  eventsLoading,
+   743→   743→  sessionMode,
+   744→   744→}: {
+   745→   745→  scenario: OffenseScenario | null;
+   746→   746→  open: boolean;
+   747→   747→  onOpenChange: (o: boolean) => void;
+   748→   748→  events: SecurityEvent[];
+   749→   749→  eventsLoading: boolean;
+   750→   750→  sessionMode: "live" | "historical";
+   751→   751→}) {
+   752→   752→  return (
+   753→   753→    <Dialog open={open} onOpenChange={onOpenChange}>
+   754→   754→      <DialogContent className="offense-surface max-h-[90vh] max-w-3xl gap-0 overflow-y-auto p-0 sm:max-w-3xl">
+   755→   755→        <DialogHeader className="border-b border-border/40 px-4 py-3 text-left">
+   756→   756→          <DialogTitle className="flex items-center gap-2 font-mono-data text-sm uppercase tracking-wider">
+   757→   757→            <ShieldAlert className="h-4 w-4 text-[color:var(--soc-critical)]" />
+   758→   758→            Potential Attack Scenario
+   759→   759→          </DialogTitle>
+   760→   760→          <DialogDescription className="text-[10px] uppercase tracking-wider text-muted-foreground">
+   761→   761→            Defensive analysis — observed activity, not a confirmed attack.
+   762→   762→          </DialogDescription>
+   763→   763→        </DialogHeader>
+   764→   764→        <div className="p-4">
+   765→   765→          {scenario && (
+   766→   766→            <ScenarioDetailContent
+   767→   767→              scenario={scenario}
+   768→   768→              events={events}
+   769→   769→              eventsLoading={eventsLoading}
+   770→   770→              sessionMode={sessionMode}
+   771→   771→            />
+   772→   772→          )}
+   773→   773→        </div>
+   774→   774→      </DialogContent>
+   775→   775→    </Dialog>
+   776→   776→  );
+   777→   777→}
+   778→   778→
+   779→   779→// ============================================================
+   780→   780→// Loading / Empty skeletons
+   781→   781→// ============================================================
+   782→   782→
+   783→   783→function ScenarioCardSkeleton() {
+   784→   784→  return (
+   785→   785→    <div className="offense-surface relative overflow-hidden rounded-lg border p-3 pl-4">
+   786→   786→      <div className="absolute left-0 top-0 h-full w-1 bg-[color:var(--soc-critical)]/40" />
+   787→   787→      <div className="flex items-center gap-1.5">
+   788→   788→        <Skeleton className="h-4 w-16" />
+   789→   789→        <Skeleton className="h-3 w-12" />
+   790→   790→      </div>
+   791→   791→      <Skeleton className="mt-2 h-4 w-3/4" />
+   792→   792→      <Skeleton className="mt-1 h-3 w-1/2" />
+   793→   793→      <Skeleton className="mt-3 h-1.5 w-full" />
+   794→   794→      <div className="mt-3 grid grid-cols-2 gap-2">
+   795→   795→        <Skeleton className="h-8 w-full" />
+   796→   796→        <Skeleton className="h-8 w-full" />
+   797→   797→      </div>
+   798→   798→      <Skeleton className="mt-3 h-10 w-full" />
+   799→   799→      <Skeleton className="mt-3 h-16 w-full" />
+   800→   800→      <Skeleton className="mt-3 h-6 w-full" />
+   801→   801→    </div>
+   802→   802→  );
+   803→   803→}
+   804→   804→
+   805→   805→function NoSessionEmptyState() {
+   806→   806→  const setView = useAppStore((s) => s.setView);
+   807→   807→  return (
+   808→   808→    <div className="flex h-full flex-col items-center justify-center gap-4 px-6 py-12 text-center">
+   809→   809→      <div className="flex h-16 w-16 items-center justify-center rounded-full border border-[color:var(--soc-critical)]/30 bg-[color:var(--soc-critical)]/10">
+   810→   810→        <Radar className="h-8 w-8 text-[color:var(--soc-critical)]" />
+   811→   811→      </div>
+   812→   812→      <div>
+   813→   813→        <h3 className="font-mono-data text-base font-bold uppercase tracking-wider text-foreground">
+   814→   814→          No Active Session
+   815→   815→        </h3>
+   816→   816→        <p className="mt-1.5 max-w-md text-sm text-muted-foreground">
+   817→   817→          Start monitoring or open a historical session to view offense analysis.
+   818→   818→          Potential attack scenarios are derived from observed activity, exposed
+   819→   819→          services and detected security patterns.
+   820→   820→        </p>
+   821→   821→      </div>
+   822→   822→      <Button
+   823→   823→        size="sm"
+   824→   824→        className="gap-1.5"
+   825→   825→        onClick={() => setView("monitor")}
+   826→   826→      >
+   827→   827→        <Activity className="h-4 w-4" />
+   828→   828→        Go to Live Monitor
+   829→   829→      </Button>
+   830→   830→    </div>
+   831→   831→  );
+   832→   832→}
+   833→   833→
+   834→   834→function NoScenariosEmptyState({ mode }: { mode: "live" | "historical" }) {
+   835→   835→  return (
+   836→   836→    <div className="flex min-h-[280px] flex-col items-center justify-center gap-3 rounded-lg border border-dashed border-border/50 bg-card/30 px-6 py-12 text-center">
+   837→   837→      <div className="flex h-14 w-14 items-center justify-center rounded-full border border-border/40 bg-muted/30">
+   838→   838→        <ScanLine className="h-7 w-7 text-muted-foreground/60" />
+   839→   839→      </div>
+   840→   840→      <div>
+   841→   841→        <h4 className="font-mono-data text-sm font-semibold uppercase tracking-wider text-foreground/80">
+   842→   842→          No Potential Attack Scenarios Yet
+   843→   843→        </h4>
+   844→   844→        <p className="mx-auto mt-1.5 max-w-md text-xs text-muted-foreground">
+   845→   845→          {mode === "live"
+   846→   846→            ? "Scenarios appear as detection rules observe suspicious patterns. Live telemetry is being collected and correlated."
+   847→   847→            : "This historical session did not trigger any offense scenarios."}
+   848→   848→        </p>
+   849→   849→      </div>
+   850→   850→    </div>
+   851→   851→  );
+   852→   852→}
+   853→   853→
+   854→   854→// ============================================================
+   855→   855→// Summary row
+   856→   856→// ============================================================
+   857→   857→
+   858→   858→function SummaryRow({ scenarios }: { scenarios: OffenseScenario[] }) {
+   859→   859→  const counts = useMemo(() => {
+   860→   860→    const c = { total: scenarios.length, critical: 0, high: 0, mediumLow: 0 };
+   861→   861→    for (const s of scenarios) {
+   862→   862→      if (s.severity === "critical") c.critical++;
+   863→   863→      else if (s.severity === "high") c.high++;
+   864→   864→      else if (s.severity === "medium" || s.severity === "low") c.mediumLow++;
+   865→   865→    }
+   866→   866→    return c;
+   867→   867→  }, [scenarios]);
+   868→   868→
+   869→   869→  return (
+   870→   870→    <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+   871→   871→      <KpiCard
+   872→   872→        label="Total Scenarios"
+   873→   873→        value={counts.total}
+   874→   874→        icon={ListTree}
+   875→   875→        accent="critical"
+   876→   876→      />
+   877→   877→      <KpiCard
+   878→   878→        label="Critical"
+   879→   879→        value={counts.critical}
+   880→   880→        icon={AlertOctagon}
+   881→   881→        accent="critical"
+   882→   882→      />
+   883→   883→      <KpiCard
+   884→   884→        label="High"
+   885→   885→        value={counts.high}
+   886→   886→        icon={AlertTriangle}
+   887→   887→        accent="high"
+   888→   888→      />
+   889→   889→      <KpiCard
+   890→   890→        label="Medium / Low"
+   891→   891→        value={counts.mediumLow}
+   892→   892→        icon={AlertCircle}
+   893→   893→        accent="medium"
+   894→   894→      />
+   895→   895→    </div>
+   896→   896→  );
+   897→   897→}
+   898→   898→
+   899→   899→// ============================================================
+   900→   900→// Main View
+   901→   901→// ============================================================
+   902→   902→
+   903→   903→export function OffenseView() {
+   904→   904→  const sessionId = useAppStore((s) => s.sessionId);
+   905→   905→  const historicalSession = useAppStore((s) => s.historicalSession);
+   906→   906→  const liveScenarios = useAppStore((s) => s.offenseScenarios);
+   907→   907→  const setOffenseScenarios = useAppStore((s) => s.setOffenseScenarios);
+   908→   908→  // Cross-view link target: another view (e.g. Defense) may set this to a
+   909→   909→  // scenarioId to request that the Offense view auto-open that scenario's
+   910→   910→  // detail dialog. We sync it into our local dialogScenarioId state below.
+   911→   911→  const selectedOffenseId = useAppStore((s) => s.selectedOffenseId);
+   912→   912→  const setSelectedOffense = useAppStore((s) => s.setSelectedOffense);
+   913→   913→
+   914→   914→  // Determine mode
+   915→   915→  const mode: "live" | "historical" | "empty" =
+   916→   916→    historicalSession != null
+   917→   917→      ? "historical"
+   918→   918→      : sessionId != null
+   919→   919→        ? "live"
+   920→   920→        : "empty";
+   921→   921→
+   922→   922→  // Historical state
+   923→   923→  const [histScenarios, setHistScenarios] = useState<OffenseScenario[]>([]);
+   924→   924→  const [histEvents, setHistEvents] = useState<SecurityEvent[]>([]);
+   925→   925→  const [histLoading, setHistLoading] = useState(false);
+   926→   926→  const [histError, setHistError] = useState<string | null>(null);
+   927→   927→
+   928→   928→  // Live seed state
+   929→   929→  const [liveSeeding, setLiveSeeding] = useState(false);
+   930→   930→
+   931→   931→  // Dialog state
+   932→   932→  const [dialogScenarioId, setDialogScenarioId] = useState<string | null>(null);
+   933→   933→  const [dialogEvents, setDialogEvents] = useState<SecurityEvent[]>([]);
+   934→   934→  const [dialogEventsLoading, setDialogEventsLoading] = useState(false);
+   935→   935→
+   936→   936→  // ---------------- Historical fetch ----------------
+   937→   937→  useEffect(() => {
+   938→   938→    if (mode !== "historical" || !historicalSession) return;
+   939→   939→    let cancelled = false;
+   940→   940→    const run = async () => {
+   941→   941→      setHistLoading(true);
+   942→   942→      setHistError(null);
+   943→   943→      try {
+   944→   944→        const res = await api.getHistoryDetail(historicalSession.id);
+   945→   945→        if (cancelled) return;
+   946→   946→        setHistScenarios((res.offenseScenarios ?? []).map(normalizeScenario));
+   947→   947→        setHistEvents(res.events ?? []);
+   948→   948→      } catch (e: unknown) {
+   949→   949→        if (cancelled) return;
+   950→   950→        const msg =
+   951→   951→          e instanceof Error ? e.message : "Failed to load historical session.";
+   952→   952→        setHistError(msg);
+   953→   953→        toast.error(msg);
+   954→   954→      } finally {
+   955→   955→        if (!cancelled) setHistLoading(false);
+   956→   956→      }
+   957→   957→    };
+   958→   958→    void run();
+   959→   959→    return () => {
+   960→   960→      cancelled = true;
+   961→   961→    };
+   962→   962→  }, [mode, historicalSession]);
+   963→   963→
+   964→   964→  // ---------------- Live seed fetch ----------------
+   965→   965→  useEffect(() => {
+   966→   966→    if (mode !== "live" || !sessionId) return;
+   967→   967→    let cancelled = false;
+   968→   968→    const run = async () => {
+   969→   969→      setLiveSeeding(true);
+   970→   970→      try {
+   971→   971→        const res = await api.getScenarios(sessionId);
+   972→   972→        if (cancelled) return;
+   973→   973→        const offense = (res.offense ?? []).map(normalizeScenario);
+   974→   974→        // Replace the live scenario list with the authoritative snapshot.
+   975→   975→        // Any WS updates that arrive afterward will upsert on top.
+   976→   976→        setOffenseScenarios(offense);
+   977→   977→      } catch (e: unknown) {
+   978→   978→        if (cancelled) return;
+   979→   979→        // Silent — store may already have streamed scenarios via WS.
+   980→   980→        console.warn("[OffenseView] failed to seed scenarios:", e);
+   981→   981→      } finally {
+   982→   982→        if (!cancelled) setLiveSeeding(false);
+   983→   983→      }
+   984→   984→    };
+   985→   985→    void run();
+   986→   986→    return () => {
+   987→   987→      cancelled = true;
+   988→   988→    };
+   989→   989→  }, [mode, sessionId, setOffenseScenarios]);
+   990→   990→
+   991→   991→  // ---------------- Cross-view link: Defense → Offense ----------------
+   992→   992→  // When another view sets `selectedOffenseId` to a scenarioId, mirror it
+   993→   993→  // into our local dialogScenarioId so the detail dialog opens for that
+   994→   994→  // scenario. Cleared when the dialog closes (see onOpenChange below).
+   995→   995→  useEffect(() => {
+   996→   996→    if (selectedOffenseId) {
+   997→   997→      setDialogScenarioId(selectedOffenseId);
+   998→   998→    }
+   999→   999→  }, [selectedOffenseId]);
+  1000→  1000→
+  1001→  1001→  // ---------------- Dialog events fetch (live mode only) ----------------
+  1002→  1002→  const dialogScenario = useMemo<OffenseScenario | null>(() => {
+  1003→  1003→    if (!dialogScenarioId) return null;
+  1004→  1004→    const pool = mode === "historical" ? histScenarios : liveScenarios;
+  1005→  1005→    return pool.find((s) => s.scenarioId === dialogScenarioId) ?? null;
+  1006→  1006→  }, [dialogScenarioId, mode, histScenarios, liveScenarios]);
+  1007→  1007→
+  1008→  1008→  useEffect(() => {
+  1009→  1009→    if (!dialogScenarioId || mode !== "live" || !sessionId) return;
+  1010→  1010→    let cancelled = false;
+  1011→  1011→    const run = async () => {
+  1012→  1012→      setDialogEventsLoading(true);
+  1013→  1013→      setDialogEvents([]);
+  1014→  1014→      try {
+  1015→  1015→        const res = await api.getEvents(sessionId, 500);
+  1016→  1016→        if (cancelled) return;
+  1017→  1017→        setDialogEvents(res.events ?? []);
+  1018→  1018→      } catch (e: unknown) {
+  1019→  1019→        if (cancelled) return;
+  1020→  1020→        console.warn("[OffenseView] failed to load events for dialog:", e);
+  1021→  1021→      } finally {
+  1022→  1022→        if (!cancelled) setDialogEventsLoading(false);
+  1023→  1023→      }
+  1024→  1024→    };
+  1025→  1025→    void run();
+  1026→  1026→    return () => {
+  1027→  1027→      cancelled = true;
+  1028→  1028→    };
+  1029→  1029→  }, [dialogScenarioId, mode, sessionId]);
+  1030→  1030→
+  1031→  1031→  // ---------------- Active scenarios (sorted) ----------------
+  1032→  1032→  const scenarios = useMemo<OffenseScenario[]>(() => {
+  1033→  1033→    const raw = mode === "historical" ? histScenarios : liveScenarios;
+  1034→  1034→    return sortScenarios(raw.map(normalizeScenario));
+  1035→  1035→  }, [mode, histScenarios, liveScenarios]);
+  1036→  1036→
+  1037→  1037→  const dialogOpen = !!dialogScenarioId;
+  1038→  1038→  const dialogEventsForMode: SecurityEvent[] =
+  1039→  1039→    mode === "historical" ? histEvents : dialogEvents;
+  1040→  1040→
+  1041→  1041→  // ---------------- Empty mode ----------------
+  1042→  1042→  if (mode === "empty") {
+  1043→  1043→    return (
+  1044→  1044→      <div className="flex h-full flex-col overflow-hidden">
+  1045→  1045→        <OffenseHeader mode="empty" subtitle="" />
+  1046→  1046→        <div className="flex-1 overflow-y-auto">
+  1047→  1047→          <NoSessionEmptyState />
+  1048→  1048→        </div>
+  1049→  1049→      </div>
+  1050→  1050→    );
+  1051→  1051→  }
+  1052→  1052→
+  1053→  1053→  const sessionMode: "live" | "historical" = mode;
+  1054→  1054→  const subtitle =
+  1055→  1055→    mode === "live"
+  1056→  1056→      ? `Live session · ${scenarios.length} potential scenario${scenarios.length === 1 ? "" : "s"} under analysis`
+  1057→  1057→      : historicalSession
+  1058→  1058→        ? `Historical session · ${historicalSession.targetAddress} · ${historicalSession.startedAt ? new Date(historicalSession.startedAt).toLocaleString() : ""}`
+  1059→  1059→        : "";
+  1060→  1060→
+  1061→  1061→  const isLoading =
+  1062→  1062→    (mode === "historical" && histLoading) ||
+  1063→  1063→    (mode === "live" && liveSeeding && scenarios.length === 0);
+  1064→  1064→
+  1065→  1065→  return (
+  1066→  1066→    <div className="flex h-full flex-col overflow-hidden">
+  1067→  1067→      <OffenseHeader mode={sessionMode} subtitle={subtitle} />
+  1068→  1068→
+  1069→  1069→      {/* Summary row */}
+  1070→  1070→      <div className="shrink-0 border-b border-border/40 px-3 py-3">
+  1071→  1071→        <SummaryRow scenarios={scenarios} />
+  1072→  1072→      </div>
+  1073→  1073→
+  1074→  1074→      {/* Scrollable body */}
+  1075→  1075→      <div className="soc-scrollbar min-h-0 flex-1 overflow-y-auto overflow-x-hidden">
+  1076→  1076→        <div className="flex flex-col gap-3 p-3">
+  1077→  1077→          {/* Section header */}
+  1078→  1078→          <div className="flex items-center justify-between gap-2">
+  1079→  1079→            <div className="flex items-center gap-2">
+  1080→  1080→              <h3 className="font-mono-data text-xs font-semibold uppercase tracking-wider text-foreground">
+  1081→  1081→                Potential Attack Scenarios
+  1082→  1082→              </h3>
+  1083→  1083→              <span className="rounded-sm border border-[color:var(--soc-critical)]/40 bg-[color:var(--soc-critical)]/10 px-1.5 py-0.5 font-mono-data text-[10px] font-bold text-[color:var(--soc-critical)]">
+  1084→  1084→                {scenarios.length}
+  1085→  1085→              </span>
+  1086→  1086→            </div>
+  1087→  1087→            {mode === "historical" && histError && (
+  1088→  1088→              <span className="font-mono-data text-[10px] text-[color:var(--soc-critical)]">
+  1089→  1089→                ERROR: {histError}
+  1090→  1090→              </span>
+  1091→  1091→            )}
+  1092→  1092→          </div>
+  1093→  1093→
+  1094→  1094→          {/* Cards grid */}
+  1095→  1095→          {isLoading ? (
+  1096→  1096→            <div className="grid grid-cols-1 gap-3 xl:grid-cols-2">
+  1097→  1097→              {[0, 1, 2, 3].map((i) => (
+  1098→  1098→                <ScenarioCardSkeleton key={i} />
+  1099→  1099→              ))}
+  1100→  1100→            </div>
+  1101→  1101→          ) : scenarios.length === 0 ? (
+  1102→  1102→            <NoScenariosEmptyState mode={sessionMode} />
+  1103→  1103→          ) : (
+  1104→  1104→            <div className="grid grid-cols-1 gap-3 xl:grid-cols-2">
+  1105→  1105→              {scenarios.map((s) => (
+  1106→  1106→                <ScenarioCard
+  1107→  1107→                  key={s.scenarioId}
+  1108→  1108→                  scenario={s}
+  1109→  1109→                  onOpen={() => setDialogScenarioId(s.scenarioId)}
+  1110→  1110→                />
+  1111→  1111→              ))}
+  1112→  1112→            </div>
+  1113→  1113→          )}
+  1114→  1114→
+  1115→  1115→          {/* Footer disclaimer */}
+  1116→  1116→          <div className="mt-1 rounded-md border border-[color:var(--soc-medium)]/30 bg-[color:var(--soc-medium)]/5 px-3 py-2">
+  1117→  1117→            <p className="text-[10px] leading-snug text-muted-foreground">
+  1118→  1118→              <span className="font-mono-data font-semibold uppercase tracking-wider text-[color:var(--soc-medium)]">
+  1119→  1119→                Defensive Analysis:
+  1120→  1120→              </span>{" "}
+  1121→  1121→              Scenarios represent potential attack patterns derived from observed
+  1122→  1122→              telemetry and exposed services. They do NOT confirm a successful
+  1123→  1123→              attack. Correlate with authorized scope and additional evidence
+  1124→  1124→              before action.
+  1125→  1125→            </p>
+  1126→  1126→          </div>
+  1127→  1127→        </div>
+  1128→  1128→      </div>
+  1129→  1129→
+  1130→  1130→      {/* Detail dialog */}
+  1131→  1131→      <ScenarioDetailDialog
+  1132→  1132→        scenario={dialogScenario}
+  1133→  1133→        open={dialogOpen}
+  1134→  1134→        onOpenChange={(o) => {
+  1135→  1135→          if (!o) {
+  1136→  1136→            setDialogScenarioId(null);
+  1137→  1137→            // Clear cross-view link state so the dialog doesn't reopen.
+  1138→  1138→            if (selectedOffenseId) setSelectedOffense(null);
+  1139→  1139→          }
+  1140→  1140→        }}
+  1141→  1141→        events={dialogEventsForMode}
+  1142→  1142→        eventsLoading={mode === "live" && dialogEventsLoading}
+  1143→  1143→        sessionMode={sessionMode}
+  1144→  1144→      />
+  1145→  1145→    </div>
+  1146→  1146→  );
+  1147→  1147→}
+  1148→  1148→
+  1149→  1149→// ============================================================
+  1150→  1150→// Header
+  1151→  1151→// ============================================================
+  1152→  1152→
+  1153→  1153→function OffenseHeader({
+  1154→  1154→  mode,
+  1155→  1155→  subtitle,
+  1156→  1156→}: {
+  1157→  1157→  mode: "live" | "historical" | "empty";
+  1158→  1158→  subtitle: string;
+  1159→  1159→}) {
+  1160→  1160→  return (
+  1161→  1161→    <div className="shrink-0 border-b border-[color:var(--soc-critical)]/30 bg-[color:var(--soc-critical)]/5 px-4 py-3">
+  1162→  1162→      <div className="flex flex-wrap items-center justify-between gap-2">
+  1163→  1163→        <div className="flex min-w-0 items-center gap-2.5">
+  1164→  1164→          <div className="flex h-7 w-7 items-center justify-center rounded-md border border-[color:var(--soc-critical)]/40 bg-[color:var(--soc-critical)]/15">
+  1165→  1165→            <Swords className="h-4 w-4 text-[color:var(--soc-critical)]" />
+  1166→  1166→          </div>
+  1167→  1167→          <div className="min-w-0">
+  1168→  1168→            <h2 className="font-mono-data text-sm font-bold uppercase tracking-wider text-foreground">
+  1169→  1169→              Offense
+  1170→  1170→            </h2>
+  1171→  1171→            <p className="truncate text-[10px] text-muted-foreground">
+  1172→  1172→              {subtitle ||
+  1173→  1173→                "Potential attack scenarios derived from observed activity, exposed services and detected security patterns."}
+  1174→  1174→            </p>
+  1175→  1175→          </div>
+  1176→  1176→        </div>
+  1177→  1177→        <div className="flex items-center gap-2">
+  1178→  1178→          {mode === "live" && (
+  1179→  1179→            <span className="flex items-center gap-1.5 rounded-sm border border-[color:var(--soc-success)]/40 bg-[color:var(--soc-success)]/10 px-1.5 py-0.5 font-mono-data text-[9px] font-bold uppercase tracking-wider text-[color:var(--soc-success)]">
+  1180→  1180→              <span className="inline-block h-1.5 w-1.5 rounded-full bg-[color:var(--soc-success)] live-pulse" />
+  1181→  1181→              Live
+  1182→  1182→            </span>
+  1183→  1183→          )}
+  1184→  1184→          {mode === "historical" && (
+  1185→  1185→            <span className="flex items-center gap-1.5 rounded-sm border border-[color:var(--soc-info)]/40 bg-[color:var(--soc-info)]/10 px-1.5 py-0.5 font-mono-data text-[9px] font-bold uppercase tracking-wider text-[color:var(--soc-info)]">
+  1186→  1186→              Historical
+  1187→  1187→            </span>
+  1188→  1188→          )}
+  1189→  1189→          <AuthWarning variant="inline" className="hidden sm:flex" />
+  1190→  1190→        </div>
+  1191→  1191→      </div>
+  1192→  1192→    </div>
+  1193→  1193→  );
+  1194→  1194→}
+  1195→  1195→

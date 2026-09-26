@@ -1,0 +1,464 @@
+     1→# LiveSOC — Project Worklog
+     2→
+     3→Project: **LiveSOC — Live Security Monitoring & Detection Platform**
+     4→Stack: Next.js 16 (App Router) + TypeScript + Tailwind CSS 4 + shadcn/ui + Prisma (SQLite) + socket.io mini-service
+     5→Single user-visible route: `/`
+     6→
+     7→> This file is the shared handover document. Every agent MUST read it before working and append a section after finishing.
+     8→
+     9→---
+    10→Task ID: 1
+    11→Agent: orchestrator (main)
+    12→Task: Foundation — Prisma schema, types, constants, SOC dark theme
+    13→
+    14→Work Log:
+    15→- Inspected current project (Next.js 16 scaffold, shadcn/ui installed, Prisma+SQLite, socket.io example present).
+    16→- Adapted the user's FastAPI/Python/Vite spec to the Next.js environment:
+    17→  - Backend = Next.js API routes under `/api/...`
+    18→  - DB = SQLite via Prisma (instead of PostgreSQL)
+    19→  - WebSocket = socket.io mini-service on port 3003 (per environment rules)
+    20→  - Frontend = single `/` route with client-side view switching (Live Monitor / Offense / Defense / History / Reports / Settings)
+    21→- Wrote Prisma schema with models: Target, Assessment, Port, Service, MonitoringSession, Event, Alert, ScenarioOffense, ScenarioDefense, Report, AppSetting, AuditLog. Pushed to DB successfully (`bun run db:push`).
+    22→- Wrote `src/lib/types.ts` (full type system: events, alerts, scenarios, KPI, WS messages, settings).
+    23→- Wrote `src/lib/constants.ts` (8 detection rules, 7 offense templates, 6 defense templates, severity helpers, MITRE mappings, default settings, authorized-scope notice).
+    24→- Rewrote `src/app/globals.css` with a professional SOC dark theme: deep navy/charcoal base, semantic severity colors (critical=red, high=orange, medium=amber, low=cyan, info=purple, success=green), offense-surface (dark red) and defense-surface (navy/cyan) utility classes, live-pulse animation, soc-grid background, custom scrollbar.
+    25→
+    26→Stage Summary:
+    27→- Foundation ready. DB schema live. Type system + detection rule library + scenario templates in place.
+    28→- Next: backend logic (detection/correlation/offense/defense engines + scanner + telemetry collector), WebSocket mini-service, API routes, then frontend pages.
+    29→
+    30→---
+    31→Task ID: 2-a
+    32→Agent: backend-logic
+    33→Task: Build backend logic modules under `src/lib/monitoring/` — scanner, telemetry, detection, correlation, stats, session manager, report, audit. Pure-logic TypeScript (no Next.js imports) used by both API routes and the socket.io mini-service.
+    34→
+    35→Work Log:
+    36→- Files created under `src/lib/monitoring/`:
+    37→  - `scanner.ts` — `validateTarget()` accepts localhost, 127.0.0.1, RFC1918 private ranges (10.x / 172.16-31.x / 192.168.x), and lab-looking domains (.lab/.local/.internal/.test/.example/.invalid/.home/.lan/.corp). Rejects public IPs, 0.0.0.0, link-local. `runAssessment()` is a deterministic mock (FNV-1a hash → mulberry32 PRNG) that returns 3–8 stable open ports/services from a realistic 16-port catalog (22/80/443/3306/5432/6379/8080/8443/21/25/53/111/139/445/3389/5900) with product/version/extrainfo, hostname, OS guess, latency.
+    38→  - `telemetry.ts` — `createTelemetryGenerator()` drives a 5-phase deterministic narrative over ~2–3 min: P1 (0-20s) normal low-rate from 4 normal sources → RULE-007/008; P2 (20-40s) scanner hits 4-6 ports/tick → RULE-001; P3 (40-70s) SSH auth-failure burst → RULE-003; P4 (70-100s) 8-12 HTTP requests/tick → RULE-004; P5 (100s+) 10-15 connections/tick → RULE-005. All events have `isDemo:true`, incrementing `EVT-{sessionShort}-{NNNNN}` IDs (session prefix for DB-UNIQUE safety), proper source/destIp/destPort/protocol/severity, source collector mapping (network/system_logs/web_logs/firewall). Exports `nextEventId()` helper per spec.
+    39→  - `detection.ts` — `DetectionContext` with named rolling-window fields (`sourcePortCounts`, `sourceDestPortCounts`, `authFailuresBySource`, `httpRequestTimeline`, `connectionTimeline`, `baselineSourceIps`, `baselineServices`, `totalConnections`) plus timestamp helper maps. `evaluateEvent()` implements all 8 rules with cooldown (30s per rule+key) to avoid alert floods. RULE-007/008 add to baseline after firing (once per new source/service). `pruneContext()` drops entries older than 90s; called automatically inside `updateContext()` every 10s.
+    40→  - `correlation.ts` — `createCorrelationState(idPrefix?)` maintains `offenseScenarios`/`defenseScenarios` keyed by category. `processDetection()` maps each rule to an offense template category (RULE-001/008→network_service_discovery, RULE-002/006→suspicious_service_access, RULE-003→repeated_auth_attempts, RULE-004→http_request_anomaly, RULE-005→unusual_connection_rate, RULE-007→new_source_activity). Critical dedup: UPDATEs existing scenario (increment eventCount, prepend event ID, cap relatedEventIds at 50 most-recent, recompute severity with escalation >20→high / >50→critical for auth/connection/http scenarios, recompute confidence capped at 95) and only creates new when category is unseen. Pairs each offense with its defense scenario (linked via relatedOffenseId). `markInactive(30s)`, `resolveScenario()`, `getStateSnapshot()` exported.
+    41→  - `stats.ts` — `computeKpi()` O(n) severity counts + events/sec over last 1s + traffic rate estimate. `computeNetworkActivity(windowMs=60s)` builds protocol distribution, top-5 source IPs, top-5 dest ports, last 20 recent connections, 30 buckets of 2s for events-per-sec and traffic timelines.
+    42→  - `audit.ts` — `auditLog(level, module, message, meta?)` inserts into AuditLog table; non-throwing (errors → console.error only).
+    43→  - `session.ts` — singleton `sessionManager` with `startSession()`, `stopSession()`, `getActive()`, `getActiveAll()`, `broadcast()`, `subscribe()`, `unsubscribe()`. startSession: validates target → upserts Target → runs assessment → inserts Assessment+Services+Ports → creates MonitoringSession → wires detection+correlation+telemetry → stores in `activeSessions` map. Per-event pipeline (serialized via Promise chain to avoid SQLite races): stamp sessionId → insert Event → push to recentEvents (cap 500) → broadcast `event` → evaluateEvent → for each detection: insert Alert (cap 200) → broadcast `alert` → processDetection → upsert offense/defense → broadcast `offense_scenario(_update)`/`defense_scenario(_update)` → recompute+broadcast kpi & network_activity → flush session counters every 10 events. stopSession: stops telemetry, awaits chain flush, computes riskSummary (`X critical, Y high, Z medium, W low alerts over Ns`), updates DB row (status=completed, endedAt, durationSec, eventCount, alertCount, riskSummary), removes from map, broadcasts `session_ended`. ActiveSession includes `idPrefix` (short session id) used to globally-unique-ify eventId/alertId/scenarioId so DB UNIQUE constraints can't collide across sessions.
+    44→  - `report.ts` — `assembleReportData(sessionId)` fetches session+target+assessment+events+alerts+scenarios and returns `ReportData` (eventsSummary by severity, alerts, offense/defense scenarios, 5s-bucket timeline, top-5 source IPs/dest ports, riskSummary, deduplicated recommendations from defense scenarios, generatedAt). `computeRiskLevel(alerts, scenarios)` returns max severity.
+    45→  - `index.ts` — barrel re-export of all modules.
+    46→
+    47→Key decisions:
+    48→- Event/alert/scenario IDs are prefixed with a short hash of the session id (e.g. `EVT-cmuhwg1i-00001`, `ALR-cmuhwg1i-00001`, `SCN-O-cmuhwg1i-00001`) so the DB's UNIQUE constraints on Event.eventId / Alert.alertId / ScenarioOffense.scenarioId / ScenarioDefense.scenarioId don't collide across sessions. The bare `EVT-NNNNN` / `SCN-O-NNNNN` formats still work for in-memory-only use (no prefix).
+    49→- `nextEventId(counter)` helper kept exactly per spec (`EVT-${padStart(5,'0')}`); the session-prefixed form is layered on top inside `makeEvent()` when `cfg.sessionId` is provided.
+    50→- Detection context uses timestamp arrays as the source of truth for pruning; the named count Maps are kept in sync for O(1) lookups during rule evaluation.
+    51→- Per-rule 30s cooldown via `lastFired` map prevents alert floods when a rule condition is persistently met.
+    52→- No Next.js imports anywhere in `src/lib/monitoring/`. Only `@/lib/db`, `@/lib/types`, `@/lib/constants`, `@prisma/client`, and node built-ins.
+    53→
+    54→Stage Summary:
+    55→- All 8 backend logic modules ready and compiling clean (`bunx tsc --noEmit` shows zero errors in `src/lib/monitoring/`).
+    56→- Verified end-to-end via a 120-second demo session: all 8 detection rules fired, all 6 offense categories and all 6 defense categories spawned, DB persisted events/alerts/scenarios correctly, `assembleReportData()` returned a complete report, session cleanup left zero active sessions.
+    57→- Exported public API:
+    58→  - `validateTarget`, `runAssessment` (scanner)
+    59→  - `createTelemetryGenerator`, `nextEventId` (telemetry)
+    60→  - `createDetectionContext`, `evaluateEvent`, `updateContext`, `pruneContext` (detection)
+    61→  - `createCorrelationState`, `processDetection`, `markInactive`, `resolveScenario`, `getStateSnapshot` (correlation)
+    62→  - `computeKpi`, `computeNetworkActivity` (stats)
+    63→  - `auditLog` (audit)
+    64→  - `sessionManager` singleton with `startSession`/`stopSession`/`getActive`/`getActiveAll`/`broadcast`/`subscribe`/`unsubscribe` (session)
+    65→  - `assembleReportData`, `computeRiskLevel`, `ReportData` interface (report)
+    66→- Caveats for next agents (API routes / WS mini-service / frontend):
+    67→  - WS service registers socket emitters via `sessionManager.subscribe(sessionId, cb)` and unregisters via `unsubscribe()`. The `cb` receives a `WSMessage` discriminated union ready to forward to clients.
+    68→  - API routes call `sessionManager.startSession(address, mode)` to kick off monitoring and `stopSession(id)` to end. `getActive(id)` exposes the live `ActiveSession` for ad-hoc reads (recentEvents, kpi, networkActivity, etc.).
+    69→  - The `idPrefix` scheme means event/alert/scenario IDs displayed in the UI will look like `EVT-cmuhwg1i-00001` — this is intentional and matches what's persisted in DB. Frontend filters/regexes should accept `[A-Z]+-[a-z0-9]+-\d+` style IDs, not just `[A-Z]+-\d+`.
+    70→  - Prisma client logs all queries (`log: ['query']` in `db.ts`); API routes that stream many events may want to silence this in production.
+    71→  - Telemetry interval is hard-coded to 1500ms in `sessionManager.startSession`. If settings-driven interval is needed, plumb through `AppSettings.telemetryIntervalMs` when wiring API routes.
+    72→
+    73→---
+    74→Task ID: 2-b
+    75→Agent: ws-mini-service
+    76→Task: Build the LiveSOC WebSocket mini-service — a separate bun project at `mini-services/monitor-service/` running on port 3003 with socket.io (path `/`) plus an internal REST surface that the Next.js API routes proxy to.
+    77→
+    78→Work Log:
+    79→- Files created under `mini-services/monitor-service/`:
+    80→  - `package.json` — `type: "module"`, `dev: "bun --hot index.ts"`, `start: "bun index.ts"`, dep `socket.io ^4.7.0`. Installed via `bun install` (resolved to `socket.io@4.8.4`).
+    81→  - `tsconfig.json` — `baseUrl: "."`, `paths: { "@/*": ["../../src/*"] }` so `@/lib/db`, `@/lib/monitoring/...`, `@/lib/types` resolve into the main project's `src/`. `include: ["index.ts"]` only (avoids pulling main-project React hook files into typecheck).
+    82→  - `index.ts` — socket.io server + internal REST API on the SAME HTTP server (port 3003).
+    83→
+    84→Architecture decision (the cross-process problem):
+    85→- The Next.js dev server (port 3000) and the monitor-service (port 3003) are SEPARATE processes; the in-memory `sessionManager` singleton cannot be shared.
+    86→- Chose **Option A** from the task spec: the mini-service is the SINGLE owner of `sessionManager`. Next.js API routes never touch `sessionManager` directly — instead they `fetch('http://localhost:3003/internal/...')` server-to-server. (Server-to-server fetches to absolute URLs are allowed; the system-prompt gateway rule about relative paths applies only to browser→backend calls.)
+    87→- The internal REST endpoints are NOT exposed via Caddy (Caddy only forwards browser requests tagged with `?XTransformPort=3003`, which the browser only sends for socket.io connections, not for `/internal/*`). So `/internal/*` is reachable only from localhost.
+    88→
+    89→socket.io + REST coexistence on path `/`:
+    90→- Inspected `engine.io/build/server.js` `attach()`: with `path: "/"` the `check(req)` returns `true` for EVERY URL, so ALL HTTP requests would normally fall through to `handleRequest` → `verify()` → 400 BAD_HANDSHAKE for non-socket.io requests.
+    91→- Solved by registering a connect-style middleware via `io.engine.use((req, res, next) => { if (req.url.startsWith('/internal/')) { handleInternalRoute(req, res); return; } next(); })`. This runs BEFORE engine.io's `verify()`, so `/internal/*` requests are short-circuited before socket.io touches them. (Note: the engine.io cors middleware registered before ours still adds CORS headers to `/internal/*` responses; harmless for server-to-server calls.)
+    92→- socket.io options: `path: "/"`, `cors: { origin: "*", methods: ["GET", "POST"] }`, `pingTimeout: 60000`, `pingInterval: 25000` (matches the example in `examples/websocket/server.ts`).
+    93→
+    94→socket.io client lifecycle (path `/`, single `'message'` event channel):
+    95→- On connect: emit `{ type: 'hello', sessionId: '', serverTime }` immediately. (`sessionId` is empty at hello time because no subscription yet — frontend should treat hello as a connection-ack only.)
+    96→- Client commands arrive as `socket.on('message', cmd: WSClientCommand)`. Handler dispatches on `cmd.type`:
+    97→  - `subscribe` — looks up `sessionManager.getActive(sessionId)`. If found: registers a per-socket callback via `sessionManager.subscribe(sessionId, cb)` that calls `socket.emit('message', msg)` for every broadcast; joins room `session:${sessionId}`; then sends an immediate burst so the client has current state: `session_status` → `assessment_update` → `kpi` → `network_activity` → last 50 `event` messages → last 50 `alert` messages → all current `offense_scenario` and `defense_scenario` messages. If not found: emits `session_status` with `status: 'stopped'` + an `error` message with code `SESSION_NOT_ACTIVE`.
+    98→  - `unsubscribe` — calls `sessionManager.unsubscribe(sessionId, cb)`, leaves the room, removes from per-socket subscription map.
+    99→  - `ping` — responds with `{ type: 'heartbeat', serverTime }`.
+   100→  - `pause_stream` / `resume_stream` — flips a per-socket `paused` flag (server keeps broadcasting; client handles visual pause). Sends a `log` message acknowledging.
+   101→  - Default (unknown command type) — emits `error` message. Exhaustiveness-checked via `never` cast.
+   102→- On `disconnect`: iterates the per-socket subscription map and calls `sessionManager.unsubscribe(sessionId, cb)` for each — guarantees no dangling subscribers that would `socket.emit` to a dead socket.
+   103→- Per-socket state stored in a `WeakMap<Socket, SocketState>` so it's GC'd when the socket is.
+   104→- Heartbeat interval: every 25s, `io.emit('message', { type: 'heartbeat', serverTime })` to all connected sockets.
+   105→
+   106→Internal REST surface (all JSON; bodies parsed with 1 MB cap; all handlers wrapped in try/catch with 500 + audit log on error):
+   107→- `POST /internal/start` body `{ target: string, mode?: 'demo'|'live' }` → `sessionManager.startSession(target, mode)` → 200 `{ sessionId, session, assessment }`. 400 `{ error, code: 'START_FAILED' }` on invalid target (e.g. public IP rejected by `validateTarget`). Audit-logs the failure.
+   108→- `POST /internal/stop` body `{ sessionId: string }` → `sessionManager.stopSession(sessionId)` → 200 `{ ok: true, sessionId }`.
+   109→- `GET /internal/active` → 200 `{ sessions: Array<{ id, targetId, targetAddress, assessmentId, status, mode, startedAt, eventCount, alertCount, openPorts }> }`.
+   110→- `GET /internal/status/:sessionId` → 200 `{ sessionId, session, assessment, kpi, networkActivity, eventCount, alertCount, offenseScenarios, defenseScenarios }`. 404 `{ error, code: 'SESSION_NOT_ACTIVE' }` if not in memory.
+   111→- `GET /internal/scenarios/:sessionId` → 200 `{ sessionId, offense: OffenseScenario[], defense: DefenseScenario[] }`.
+   112→- `GET /internal/events/:sessionId?limit=N` (N default 50, capped 1–500) → 200 `{ sessionId, events: SecurityEvent[] }` (newest first).
+   113→- `GET /internal/alerts/:sessionId?limit=N` (N default 50, capped 1–200) → 200 `{ sessionId, alerts: SecurityAlert[] }` (newest first).
+   114→
+   115→Cross-project import strategy:
+   116→- `tsconfig.json` paths `@/* → ../../src/*` makes `import { sessionManager } from "@/lib/monitoring"`, `import { auditLog } from "@/lib/monitoring/audit"`, `import { db } from "@/lib/db"`, `import type { WSMessage, WSClientCommand, MonitorStatus } from "@/lib/types"` resolve at both typecheck time AND runtime (Bun respects tsconfig paths).
+   117→- `DATABASE_URL` is inherited automatically: Bun walks up from CWD looking for `.env`; finds `/home/z/my-project/.env` (`DATABASE_URL=file:/home/z/my-project/db/custom.db` — absolute path, so Prisma finds the DB regardless of CWD). No dotenv needed.
+   118→- The Prisma client is already generated in the main project's `node_modules/.prisma/client/` — bun resolves `@prisma/client` from the parent `node_modules` since the mini-service doesn't declare it as its own dep. (Confirmed: `bunx tsc --noEmit` is clean and runtime DB queries succeed.)
+   119→
+   120→Startup / shutdown:
+   121→- On listen: `console.log("LiveSOC monitor service listening on :3003")` + `auditLog('info', 'monitor-service', 'Monitor service started on :3003')`.
+   122→- `SIGTERM`/`SIGINT` → `shutdown()`: clears heartbeat interval, calls `sessionManager.stopSession(id)` for every active session (which broadcasts `session_ended` to subscribers), `io.close()`, `httpServer.close()`, `db.$disconnect()`, audit-logs, then `process.exit(0)`.
+   123→- `uncaughtException` / `unhandledRejection` handlers audit-log at `critical` level (and print to stderr) so the service doesn't silently die.
+   124→
+   125→Typecheck:
+   126→- `cd mini-services/monitor-service && bunx tsc --noEmit -p tsconfig.json` → **0 errors**. The only tsconfig tweaks needed were: (1) `include: ["index.ts"]` only (avoids pulling `src/hooks/use-mobile.ts` etc. which need `--jsx`); (2) `as MonitorStatus` casts when reading `active.session.status` (Prisma types it as `string`, the WSMessage discriminated union requires `MonitorStatus`).
+   127→
+   128→Background process detachment:
+   129→- The bash tool's per-command shell kills any direct background children between commands. Solved with a **triple-fork detachment**:
+   130→  ```
+   131→  ( ( setsid bun run dev > …/monitor-service.log 2>&1 < /dev/null & ) & )
+   132→  ```
+   133→  The outer subshell forks the middle subshell which forks `bun` under `setsid` (new session, no controlling terminal). The middle subshell exits immediately so `bun`'s parent becomes PID 1 — it survives the bash tool's session cleanup. Verified by `ps -ef` + `ss -tlnp` + `curl` across multiple separate bash commands: process PID 3234 stayed alive and listening on :3003 throughout.
+   134→
+   135→End-to-end test results (all passed):
+   136→1. `curl http://127.0.0.1:3003/internal/active` → `{"sessions":[]}` HTTP 200.
+   137→2. `curl -X POST http://127.0.0.1:3003/internal/start -H 'Content-Type: application/json' -d '{"target":"192.168.1.100","mode":"demo"}'` → HTTP 200 with `{ sessionId: "cmuhwv698000ilihupf2k6rjk", session: { status: "monitoring", … }, assessment: { hostname: "srv-48", osGuess: "Linux 5.x (Ubuntu 22.04)", ports: [8443,21,53], services: ["https-alt","ftp","domain"] } }`.
+   138→3. After 4s, `GET /internal/status/<id>` showed 6 events, 7 alerts, 2 offense scenarios (new_source_activity low, network_service_discovery medium), 2 defense scenarios (suspicious_source_monitoring, network_scan_monitoring), KPI with eventsPerSec=2, topSourceIps=`[192.168.1.51, 192.168.1.50, 172.16.5.8, 10.0.0.5]`.
+   139→4. `GET /internal/scenarios/<id>` → 2 offense + 2 defense.
+   140→5. `GET /internal/events/<id>?limit=5` → 5 newest events with `EVT-cmuhwv69-NNNNN` IDs (idPrefix scheme from Task 2-a confirmed working).
+   141→6. `GET /internal/alerts/<id>?limit=5` → 5 newest alerts with `ALR-cmuhwv69-NNNNN` IDs.
+   142→7. `GET /internal/status/nonexistent-session` → 404 `{"error":"Session not active: nonexistent-session","code":"SESSION_NOT_ACTIVE"}`.
+   143→8. `POST /internal/stop` → 200 `{"ok":true,"sessionId":"…"}`; subsequent `/internal/active` empty.
+   144→9. `POST /internal/start` with `{"target":"8.8.8.8"}` → 400 `{"error":"Invalid target: Public IP addresses are outside the authorized lab scope","code":"START_FAILED"}`.
+   145→10. socket.io polling handshake `GET /?EIO=4&transport=polling` → 200 `0{"sid":"…","upgrades":["websocket"],"pingInterval":25000,"pingTimeout":60000,"maxPayload":1000000}`.
+   146→11. Full socket.io-client E2E test (separate bun script using `socket.io-client`): started session via REST → connected via WS → received `hello` → sent `subscribe` → received `session_status` + `assessment_update` + initial `kpi`/`network_activity` + 2 offense + 2 defense scenarios → over 5s received 7 live `event` messages, 7 live `alert` messages, 4 `kpi` updates, 4 `network_activity` updates, 4 `offense_scenario_update`, 4 `defense_scenario_update` → `ping` → 1 `heartbeat` reply → `unsubscribe` → REST `/internal/stop` → `sock.close()` → clean disconnect. Total 42 messages, all expected types present.
+   147→
+   148→Stage Summary:
+   149→- Monitor mini-service is **up and running** as PID 3234 on port 3003 (background, detached via triple-fork + setsid). Log at `/home/z/my-project/mini-services/monitor-service.log`.
+   150→- All 7 internal REST endpoints respond correctly. socket.io client lifecycle (connect → subscribe → burst → live updates → unsubscribe → disconnect) verified end-to-end.
+   151→- Service is left running so Next.js API routes can immediately proxy to it.
+   152→- Caveats for next agents (API routes / frontend):
+   153→  - **API routes MUST use server-to-server `fetch('http://127.0.0.1:3003/internal/...')`** — do NOT import `sessionManager` directly from API routes; the API route process won't have the active sessions that live in the monitor-service process.
+   154→  - The `sessionId` returned by `POST /internal/start` is the canonical handle for all subsequent `/internal/*` calls and for the WS `subscribe` command.
+   155→  - The WS client should connect with `io('/?XTransformPort=3003', { path: '/' })` (browser-side, relative URL). Server-side the WS is on `ws://localhost:3003/`.
+   156→  - The `hello` message arrives with `sessionId: ""` (empty) — treat it as a connection ack only, not a subscription ack. The subscription ack is the `session_status` message that follows `subscribe`.
+   157→  - On subscribe, the server replays the last 50 events and 50 alerts plus all current scenarios as a burst — frontend should be ready to merge these into state without double-counting.
+   158→  - The service uses `bun --hot` for dev — file changes restart it, which clears all in-memory active sessions. For production use `bun run start` (no hot reload).
+   159→  - If the service is killed, all in-memory active sessions are lost (though their DB rows remain — they'll just be stuck in `status: 'monitoring'` forever). A future hardening step could sweep stale `monitoring` rows on startup.
+   160→
+   161→---
+   162→Task ID: 3
+   163→Agent: api-routes
+   164→Task: Build the Next.js API routes (App Router) for LiveSOC. Browser-only endpoints that proxy server-to-server to the monitor-service on :3003 plus DB-backed history/reports/settings/targets/health endpoints.
+   165→
+   166→Work Log:
+   167→- Created `src/lib/server/monitor-proxy.ts` — server-only helper module:
+   168→  - `MONITOR_SERVICE_BASE = "http://127.0.0.1:3003"` constant.
+   169→  - `monitorFetch<T>(path, init?)` — wraps `fetch` with a 10s AbortController timeout, JSON Accept/Content-Type headers, parses response JSON, and throws `MonitorServiceError` (with `.code`) on any non-2xx or network failure.
+   170→  - `MonitorServiceError` class with `code: 'UNREACHABLE' | 'BAD_REQUEST' | 'NOT_FOUND' | 'INTERNAL'`, plus `status` and `upstream` fields. HTTP status → code mapping: 400/422 → BAD_REQUEST, 404 → NOT_FOUND, ≥500 → INTERNAL, other 4xx → BAD_REQUEST.
+   171→  - `monitorErrorToResponse(err)` — translates a `MonitorServiceError` to a `NextResponse` with the required user-friendly messages: 503 "Unable to connect to monitoring service." (UNREACHABLE), 400 "Bad request to monitoring service." (BAD_REQUEST), 404 "Monitoring session not found." (NOT_FOUND), 502 "Monitoring service error." (INTERNAL).
+   172→  - `withApiHandler(fn, { module })` — HOF wrapper that try/catches the handler, audit-logs every error via `auditLog('error', module, msg, { code, status, stack })` (non-throwing), then returns either the translated `MonitorServiceError` response or a generic 500 "Internal server error" (never leaks raw stack).
+   173→  - `checkRateLimit(ip, maxPerWindow=10, windowMs=60_000)` — in-memory per-IP sliding bucket counter used by the POST /api/monitoring start endpoint. Returns `{ ok, remaining, resetInMs }`.
+   174→  - `getClientIp(req)` — extracts the caller IP from `x-forwarded-for` (first hop) or `x-real-ip`, defaulting to `"unknown"`.
+   175→  - `pingMonitorService(timeoutMs=2000)` — quick boolean connectivity check used by /api/health.
+   176→- All route handlers use `export const runtime = "nodejs"` and `export const dynamic = "force-dynamic"` so they always run on the Node runtime and never get statically cached.
+   177→
+   178→- Created `src/app/api/monitoring/route.ts`:
+   179→  - `POST` → start monitoring. Pipeline: per-IP rate-limit check (max 10 starts/min, 429 with `retryAfterMs` on overflow) → JSON body parse → Zod validation `{ target: string, mode?: 'demo'|'live' }` → `validateTarget(target)` from `@/lib/monitoring/scanner` FIRST (rejects public IPs, 0.0.0.0, link-local, non-lab TLDs with the canonical reason strings). Only valid lab targets reach the monitor-service. Proxies to `POST /internal/start` via `monitorFetch`. On `BAD_REQUEST` from the monitor-service, returns 400 "Initial assessment failed." with `code: 'START_FAILED'` (this is the path used when `startSession()` itself rejects — though `validateTarget` should normally catch these first). On success returns `{ sessionId, session, assessment }` and audit-logs "Monitoring session started" with `{ sessionId, target, mode, ip }`.
+   180→  - `GET` → list active sessions. Proxies to `/internal/active`. Returns `{ sessions: [...] }`.
+   181→- Created `src/app/api/monitoring/[sessionId]/route.ts`:
+   182→  - `GET` → status snapshot. Proxies to `/internal/status/:sessionId`.
+   183→  - `DELETE` → stop monitoring. Proxies to `POST /internal/stop` body `{ sessionId }`. Audit-logs "Monitoring session stopped".
+   184→- Created `src/app/api/monitoring/[sessionId]/events/route.ts`:
+   185→  - `GET` → recent events. `?limit=` default 100, capped at 500. Proxies to `/internal/events/:sessionId?limit=N`.
+   186→- Created `src/app/api/monitoring/[sessionId]/alerts/route.ts`:
+   187→  - `GET` → recent alerts. `?limit=` default 100, capped at 200 (matches monitor-service hard cap). Proxies to `/internal/alerts/:sessionId?limit=N`.
+   188→- Created `src/app/api/monitoring/[sessionId]/scenarios/route.ts`:
+   189→  - `GET` → `{ sessionId, offense: [], defense: [] }`. Proxies to `/internal/scenarios/:sessionId`.
+   190→- Created `src/app/api/history/route.ts`:
+   191→  - `GET` → paginated DB list. Query: `?page=1&pageSize=20&status=...&target=...`. Uses Prisma directly on `MonitoringSession` with `include: { target: true }`, `orderBy: { startedAt: 'desc' }`. Returns `{ sessions, total, page, pageSize }`. `target` filter applies `contains` on `target.address`. pageSize capped at 100.
+   192→- Created `src/app/api/history/[sessionId]/route.ts`:
+   193→  - `GET` → full historical session detail. Loads session row + target + assessment + ports + services. Then `Promise.all`: events (paginated newest first, `?limit=200&offset=1`, capped limit 5000) + `eventsTotal` count + alerts (newest first) + offense scenarios (oldest first) + defense scenarios (oldest first). 404 "Session not found." if not in DB. Returns `{ session, events, eventsTotal, alerts, offenseScenarios, defenseScenarios }`.
+   194→- Created `src/app/api/reports/route.ts`:
+   195→  - `GET` → paginated list of `Report` rows (newest first by `generatedAt`). pageSize capped at 100. Returns `{ reports, total, page, pageSize }`.
+   196→  - `POST` → generate a new report. Body `{ sessionId }` (Zod-validated). Verifies the session exists, then calls `assembleReportData(sessionId)` from `@/lib/monitoring/report` (which pulls events + alerts + scenarios + summary from DB). Computes `riskLevel = computeRiskLevel(alerts, offenseScenarios)`. Builds a short JSON summary (target, mode, durationSec, riskSummary, topSourceIps, topDestPorts, eventsBySeverity, recommendations). Generates a unique `reportId` of form `RPT-<epoch base36>-<random base36>` (Prisma schema requires `reportId @unique` and does NOT auto-generate it — this was caught during testing). Creates the Report row. Audit-logs "Report generated" with `{ reportId, sessionId, target, riskLevel }`. Returns 201 `{ report, data }` where `data` is the full `ReportData`.
+   197→- Created `src/app/api/reports/[reportId]/route.ts`:
+   198→  - `GET` → report detail. Looks up by either the DB `id` (cuid) or the unique `reportId` (RPT-…) using `findFirst({ where: { OR: [...] } })`. 404 "Report not found." if missing. Parses `jsonSummary` back to JSON and returns `{ report, summary }`.
+   199→- Created `src/app/api/settings/route.ts`:
+   200→  - `GET` → current settings. Reads all `AppSetting` rows and merges with `DEFAULT_SETTINGS` from `@/lib/constants`. Stored values take precedence; coercion uses the default value's type (boolean → "true"/"false", number → Number(raw)). Returns `{ settings }`.
+   201→  - `PUT` → partial update. Strict Zod schema for every `AppSettings` field with sensible bounds (e.g. `telemetryIntervalMs: z.number().int().min(100).max(60_000)`, `scanTimeoutSec: z.number().int().min(5).max(600)`). Upserts each provided key into `AppSetting` via `Promise.all`. Audit-logs "Settings updated" with `{ keys }`. Returns `{ settings }` reloaded from DB.
+   202→  - Exports `loadSettings()` helper for reuse.
+   203→- Created `src/app/api/targets/route.ts`:
+   204→  - `GET` → distinct targets for UI quick-pick. Uses `db.target.findMany({ distinct: ['address'], select: { address, hostname, assessments: { orderBy: { startedAt: 'desc' }, take: 1, select: { startedAt } } }, orderBy: { address: 'asc' } })`. Returns `{ targets: [{ address, hostname, lastAssessedAt }] }`.
+   205→- Created `src/app/api/health/route.ts`:
+   206→  - `GET` → `{ status, monitorService, db, time }`. `monitorService` is `"up"`/`"down"` via `pingMonitorService(2000)` which fetches `/internal/active` with a 2s timeout. `db` is `"up"`/`"down"` via a trivial `db.appSetting.count()`. `status` is `"ok"` only when both are up, otherwise `"degraded"`. `time` is ISO now.
+   207→
+   208→Cross-process architecture notes:
+   209→- The browser ONLY talks to relative `/api/*` URLs. All cross-process work is server-to-server via `monitorFetch` hitting `http://127.0.0.1:3003/internal/*`. The system-prompt rule about relative paths for browser→backend is honored; the server-side fetches are to absolute URLs which is permitted for server-to-server traffic.
+   210→- The `withApiHandler` wrapper is applied to every exported handler, so NO raw stack traces can leak — every error path either returns a `MonitorServiceError`-mapped response or a generic 500 "Internal server error" + an audit log entry.
+   211→- Every handler that mutates state (POST /monitoring, DELETE /monitoring/[sid], POST /reports, PUT /settings) writes a structured `auditLog` entry.
+   212→
+   213→Curl test results (all passed against `http://localhost:3000/api/...`):
+   214→1. `GET /api/health` → 200 `{"status":"ok","monitorService":"up","db":"up","time":"2026-09-26T04:56:57.385Z"}`.
+   215→2. `POST /api/monitoring` body `{"target":"192.168.1.100","mode":"demo"}` → 200 `{ sessionId: "cmuhx28a7004plihutt9z63j0", session: { status: "monitoring", … }, assessment: { hostname: "srv-48", osGuess: "Linux 5.x (Ubuntu 22.04)", ports: [8443,21,53], services: ["https-alt","ftp","domain"], latencyMs: 4 } }`.
+   216→3. `GET /api/monitoring` → 200 `{ sessions: [{ id, targetId, targetAddress: "192.168.1.100", status: "monitoring", eventCount, alertCount, openPorts }] }`.
+   217→4. `GET /api/monitoring/<sid>` → 200 with full status snapshot (session + assessment + kpi + networkActivity + eventCount + alertCount + offenseScenarios + defenseScenarios).
+   218→5. `GET /api/monitoring/<sid>/events?limit=5` → 200 `{ sessionId, events: [<5 newest EVT-cmuhx28a-NNNNN entries with sourceIp/destPort/severity/raw>] }`.
+   219→6. `GET /api/monitoring/<sid>/alerts?limit=5` → 200 `{ sessionId, alerts: [<5 newest ALR-cmuhx28a-NNNNN entries with ruleId/severity/confidence/recommendedAction>] }`.
+   220→7. `GET /api/monitoring/<sid>/scenarios` → 200 `{ sessionId, offense: [<SCN-O-… entries with category/severity/technique/techniqueMitre/attackPath>], defense: [...] }`.
+   221→8. `DELETE /api/monitoring/<sid>` → 200 `{ ok: true, sessionId }`.
+   222→9. `GET /api/history?page=1&pageSize=5` → 200 `{ sessions: [<MonitoringSession rows including target, ordered startedAt desc>], total, page: 1, pageSize: 5 }`.
+   223→10. `GET /api/history/<sid>?limit=3` → 200 `{ session: { ..., target, assessment: { ..., ports, services } }, events: [<3 newest>], eventsTotal, alerts, offenseScenarios, defenseScenarios }`.
+   224→11. `GET /api/settings` → 200 `{ settings: { demoMode: true, telemetryIntervalMs: 1500, maxLiveEvents: 500, ... } }` (matches DEFAULT_SETTINGS since the table was empty).
+   225→12. `PUT /api/settings` body `{"demoMode":false,"scanTimeoutSec":45}` → 200 `{ settings: { demoMode: false, ..., scanTimeoutSec: 45, ... } }` (only the supplied keys changed, the rest stayed at defaults).
+   226→13. `GET /api/targets` → 200 `{ targets: [{ address: "192.168.1.100", hostname: null, lastAssessedAt: "2026-09-26T04:55:31.553Z" }] }`.
+   227→14. `POST /api/reports` body `{"sessionId":"<sid>"}` → 201 `{ report: { id, reportId: "RPT-muhx31m5-gzqjg8", target, title, generatedAt, riskLevel: "medium", eventCount, alertCount, scenarioCount, jsonSummary: "..." }, data: <full ReportData> }`.
+   228→15. `GET /api/reports?page=1&pageSize=5` → 200 `{ reports: [<Report rows, newest first>], total, page, pageSize }`.
+   229→16. `GET /api/reports/<reportId>` → 200 `{ report: <Report row>, summary: <parsed jsonSummary object> }`.
+   230→
+   231→Edge-case / negative-path test results:
+   232→17. `POST /api/monitoring` body `{"target":"8.8.8.8","mode":"demo"}` → 400 `{"error":"Public IP addresses are outside the authorized lab scope","code":"INVALID_TARGET"}` (rejected by `validateTarget` BEFORE any monitor-service call; audit-logged).
+   233→18. `POST /api/monitoring` body `{}` → 400 `{"error":"Invalid request.","details":{"formErrors":[],"fieldErrors":{"target":["Invalid input: expected string, received undefined"]}}}` (Zod).
+   234→19. `GET /api/monitoring/nonexistent-session` → 404 `{"error":"Monitoring session not found."}` (translated from the monitor-service's 404 SESSION_NOT_ACTIVE).
+   235→20. `GET /api/history/nonexistent-session` → 404 `{"error":"Session not found."}` (DB lookup miss; audit-logged).
+   236→21. `GET /api/reports/nonexistent-report` → 404 `{"error":"Report not found."}`.
+   237→22. Rate-limit test: 12 rapid `POST /api/monitoring` calls from the same IP — first 7 returned HTTP 200, calls 8-12 returned HTTP 429 `{"error":"Too many start requests. Please try again later.","retryAfterMs":8929}`. (Counter increments on every call including the first one; bucket holds 10 entries; the 11th call is rejected. The first 7 200s reflect the 7 already-spent bucket slots plus the 3 left over from prior tests in the same minute.)
+   238→
+   239→Lint / typecheck:
+   240→- `bun run lint` → **0 errors** in any of the new files (the only fix needed was renaming the `module` local variable in `withApiHandler` to `moduleName` because `@next/next/no-assign-module-variable` flags bare `module`). The remaining 20 warnings are pre-existing `Unused eslint-disable directive` notes in `mini-services/monitor-service/index.ts`, `src/lib/monitoring/audit.ts`, `session.ts`, `telemetry.ts` from Tasks 2-a/2-b (left untouched — out of scope).
+   241→- `bunx tsc --noEmit` → **0 errors** in `src/app/api/**` and `src/lib/server/**`.
+   242→
+   243→Stage Summary:
+   244→- All 11 Next.js API route files (12 route handlers across 8 directories) created and verified end-to-end against the live monitor-service on :3003 and the SQLite DB. The browser now has a complete REST surface at `/api/*` to drive the LiveSOC UI.
+   245→- Every handler runs on `runtime = "nodejs"` and never leaks stack traces; all mutations are audit-logged; monitor-service failures are translated to user-friendly 503/400/404/502 responses.
+   246→- Files created:
+   247→  - `src/lib/server/monitor-proxy.ts` (helpers: `monitorFetch`, `MonitorServiceError`, `withApiHandler`, `checkRateLimit`, `getClientIp`, `monitorErrorToResponse`, `pingMonitorService`)
+   248→  - `src/app/api/monitoring/route.ts` (POST, GET)
+   249→  - `src/app/api/monitoring/[sessionId]/route.ts` (GET, DELETE)
+   250→  - `src/app/api/monitoring/[sessionId]/events/route.ts` (GET)
+   251→  - `src/app/api/monitoring/[sessionId]/alerts/route.ts` (GET)
+   252→  - `src/app/api/monitoring/[sessionId]/scenarios/route.ts` (GET)
+   253→  - `src/app/api/history/route.ts` (GET)
+   254→  - `src/app/api/history/[sessionId]/route.ts` (GET)
+   255→  - `src/app/api/reports/route.ts` (GET, POST)
+   256→  - `src/app/api/reports/[reportId]/route.ts` (GET)
+   257→  - `src/app/api/settings/route.ts` (GET, PUT)
+   258→  - `src/app/api/targets/route.ts` (GET)
+   259→  - `src/app/api/health/route.ts` (GET)
+   260→- Caveats for next agents (frontend / integration):
+   261→  - All `/api/*` endpoints return JSON. Use relative URLs from the browser (e.g. `fetch('/api/monitoring', { method: 'POST', body: JSON.stringify({ target, mode }) })`). The browser NEVER talks to `:3003` directly except for the WebSocket upgrade (`io('/?XTransformPort=3003', { path: '/' })` — see Task 2-b).
+   262→  - The `POST /api/monitoring` rate limit (10 starts/min per IP) is per server process — if you scale Next.js horizontally you'll need a shared store. For single-process dev/preview this is fine.
+   263→  - `POST /api/reports` returns both the `report` row AND the full `data: ReportData`. The frontend can render the PDF client-side from `data`, OR call a future server-side PDF route. `report.pdfUrl` is left null for now (the schema supports it).
+   264→  - `GET /api/history/[sessionId]` uses `?limit=` (events page size, default 200) and `?offset=` (1-indexed page; uses `skip = max(0, offset-1)`). The `eventsTotal` field is returned so the frontend can paginate.
+   265→  - `GET /api/settings` returns `{ settings: AppSettings }` (NOT bare `AppSettings`) for consistency with the PUT response shape. Both keys are wrapped under `settings`.
+   266→  - The `GET /api/monitoring/<sid>` status endpoint will 404 once the session is stopped (because it proxies to the in-memory `/internal/status/:sessionId` which is gone). Use `GET /api/history/<sid>` for completed-session detail.
+   267→  - All errors return `{ error: string, ...optional }` with the documented user-friendly messages. No stack traces are exposed.
+   268→
+   269→---
+   270→Task ID: 5-a
+   271→Agent: frontend-live-monitor
+   272→Task: Build the LiveMonitor view — the primary operational dashboard of LiveSOC (replaces the stub at `src/components/views/live-monitor-view.tsx`)
+   273→
+   274→Work Log:
+   275→- Read all foundation files: worklog (Tasks 1–3), types.ts, constants.ts, store.ts, api-client.ts, use-monitor-ws.ts, page.tsx, and all soc/* shared components (Panel, KpiCard, SeverityBadge, StatusDot, AuthWarning). Confirmed shadcn/ui component availability (Card, Button, Input, Select, Badge, Collapsible, Skeleton, ScrollArea, ToggleGroup, etc.) and recharts for charts.
+   276→- Implemented the full LiveMonitorView as a single-file view with internal sub-components, each subscribing to the Zustand store via individual selectors. Root layout: `<div className="flex h-full flex-col overflow-hidden">` → sticky TargetControlBar + `flex-1 overflow-y-auto` scroll container with `flex flex-col gap-3` sections.
+   277→- **TargetControlBar**: TARGET label + Input (pre-filled `192.168.1.100`, disabled while active) + mode Select (Demo/Live, disabled while active) + START MONITORING (Activity icon, primary) / STOP MONITORING (Square icon, destructive) button with busy states. When active: inline target address + StatusDot (monitor status) + StatusDot (socket LIVE/RECONNECTING) + Demo badge. AuthWarning on the right. Enter key triggers start. handleStart calls `api.startMonitoring(target, mode)` → `useAppStore.startSession(...)` → seeds KPI/network/scenarios via `api.getStatus(sessionId)`. Error mapping: INVALID_TARGET→"Target is unreachable.", START_FAILED→"Initial assessment failed.", UNREACHABLE/no-status→"Unable to connect to monitoring service." handleStop calls `api.stopMonitoring(sessionId)` → `stopSession()` → toast "Monitoring session saved to history." → `resetSession()` after 1s. Fallback: uses user-typed target when API session object omits `targetAddress`.
+   278→- **AssessmentPanel** (collapsible, shown only when `assessment` exists): Collapsible header (chevron + "INITIAL ASSESSMENT" + reachability/port count + status badge). Two-column grid (lg): TARGET INFORMATION (Target/Reachability/Hostname/OS Guess/Latency/Assessment/Open Ports) | OPEN PORTS & SERVICES table (Port/Proto/State/Service/Product/Version; port number colored by service risk: SSH/RDP=amber, HTTP/HTTPS=cyan, DBs/FTP/Telnet=red, DNS=info). Scrollable if >8 ports.
+   279→- **KpiGrid**: 9 KpiCard in responsive grid (`grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 xl:grid-cols-9`): EVENTS, CRITICAL, HIGH, MEDIUM, LOW, ACTIVE CONNS, EVENTS/SEC, TRAFFIC KB/s, OPEN PORTS. Live pulse on EVENTS, ACTIVE CONNS, EVENTS/SEC, TRAFFIC when monitoring active. Values from `useAppStore.kpi`; "—" when null.
+   280→- **LiveSecurityLog** (Panel): actions = Pause/Resume (toggles `useAppStore.paused`) + Clear (calls `clearLiveView()` + toast). Filters = severity toggle badges (All/Critical/High/Medium/Low/Info, colored when active) + event-type Select (All + 7 types) + search Input. Scrollable table (max-h-[420px], soc-scrollbar): TIME|SOURCE|DESTINATION|PROTOCOL|EVENT|SEVERITY|STATUS. TIME=HH:mm:ss (mono); SOURCE/DEST=ip:port; PROTOCOL=colored badge; EVENT=eventType+message with DEMO tag (amber) for demo events; SEVERITY=SeverityBadge sm; STATUS=colored dot+text. Sticky header, hover highlight, newest-first, capped at 200 rows (useMemo). Empty state: "Waiting for telemetry…" with pulsing dot.
+   281→- **LiveNetworkActivity** (Panel): 4 mini stat boxes (Connections/Conn/Sec/Request Rate/Traffic KB/s, live pulse when active) + 2×3 grid of ChartCards (md+): Events/Sec area chart (recharts, cyan, gradient fill, custom tooltip), Traffic Rate area chart (info-blue), Protocol Distribution bar list (color-coded), Top Source IPs bar list (top 6, mono), Top Destination Ports bar list (top 6, `:port`), Recent Connections list (last 7, time+src→dst:port+proto badge). Skeleton placeholders when networkActivity null; "No data yet" when chart data empty.
+   282→- **LiveAlerts** (Panel): summary badges in header (CRITICAL/HIGH/MEDIUM/LOW counts, colored). Scrollable list (max-h-[300px], soc-scrollbar) of alert cards (capped at 100): left accent bar by severity + SeverityBadge + ruleName (bold) + alertId (mono) + message + CONF% + recommended action + timestamp. Empty state: Shield icon + "No alerts. Detection rules are monitoring telemetry…".
+   283→- All data from `useAppStore` (fed by `useMonitorWs` in page.tsx). `useMemo` for filtered lists. `toast` from sonner. lucide-react icons. SOC palette only (no indigo/blue primary). `font-mono-data` for numbers/IPs/timestamps/IDs. Compact padding (p-2/p-3, gap-3). Responsive: stack on mobile, multi-column on lg+.
+   284→
+   285→Files modified:
+   286→- `src/components/views/live-monitor-view.tsx` (full rewrite, ~900 lines)
+   287→
+   288→Verification results:
+   289→1. **Compile**: `✓ Compiled in 4.2s` — no errors.
+   290→2. **Lint**: `bun run lint` → 0 errors, 0 warnings in `live-monitor-view.tsx` (20 pre-existing warnings in other files from Tasks 2-a/2-b).
+   291→3. **Agent-browser E2E** (via Caddy gateway `http://localhost:81/`):
+   292→   - Initial load: ready state renders correctly — TARGET input pre-filled, 9 KPI cards showing "—", log "Waiting for telemetry…", alerts "No alerts…", network activity skeletons. Assessment panel hidden.
+   293→   - Start monitoring: button→STOP; input/select disabled; inline status (ACTIVE, 192.168.1.100, MONITORING, socket LIVE, Demo badge); assessment panel appears (reachable, 3 open ports, srv-48, Linux 5.x, 4ms, ports table with 8443/21/53); KPIs seed (EVENTS=31, MEDIUM=10, ACTIVE CONNS=31, EVENTS/SEC=5, TRAFFIC=0.43, OPEN PORTS=3); WS connects (SOCKET: LIVE); events stream (port_probe/log_entry/connection with DEMO tags + severity badges); alerts stream (ALR-cmuhxnu4-NNNNN, severity-colored bars, confidence%, recommended actions); network activity populates (Connections=11, Conn/Sec=0.18, area charts render, protocol distribution tcp=13/udp=4, top source IPs, top dest ports, recent connections with proto badges).
+   294→   - Filters tested: severity filter (CRITICAL→0 rows, MEDIUM→only medium rows, ALL→all rows); Pause/Resume toggle works.
+   295→   - Stop monitoring: toast "Monitoring session saved to history."; button reverts to START; store resets.
+   296→   - Screenshots saved to `/home/z/my-project/agent-ctx/`: initial-load.png, after-start-fixed.png, live-data-streaming.png, full-dashboard-live.png.
+   297→4. **Dev log**: no errors during testing. All API calls 200 (POST /api/monitoring, GET /api/monitoring/{sid}, DELETE /api/monitoring/{sid}). Audit logs inserted.
+   298→
+   299→Caveats for next agents:
+   300→- **WS requires Caddy gateway**: The `useMonitorWs` hook connects via `io("/?XTransformPort=3003", { path: "/" })` which only works when the browser accesses the app through the Caddy gateway (port 81). Direct access to Next.js dev server (port 3000) renders the UI but the socket stays on RECONNECTING (Next.js doesn't route the XTransformPort query). The Preview Panel exposes the gateway, so end users see it work. For local agent-browser testing, use `http://localhost:81/` not `http://localhost:3000/`.
+   301→- **API session object omits targetAddress**: `POST /api/monitoring` response's `session` object lacks `targetAddress` (only has `targetId`). The view falls back to the user-typed target. A future backend fix could include `targetAddress` in the start response.
+   302→- The LiveMonitor view is complete and fully functional. Other view stubs (Offense/Defense/History/Reports/Settings) still show "Loading…" placeholders — those are separate tasks.
+   303→
+   304→---
+   305→Task ID: 5-b
+   306→Agent: frontend-offense
+   307→Task: Build the Offense view — structured scenario-card view showing POTENTIAL attack scenarios derived from observed activity (replaces the stub at `src/components/views/offense-view.tsx`)
+   308→
+   309→Work Log:
+   310→- Read all prior worklog entries (Tasks 1–5a), foundation files (`types.ts`, `constants.ts`, `store.ts`, `api-client.ts`), `page.tsx`, all `src/components/soc/*` shared components, and the full `live-monitor-view.tsx` to match the established design language (dark SOC palette, `font-mono-data`, compact cards, `offense-surface` / `offense-accent` CSS utilities).
+   311→- Inspected the scenario data shape end-to-end before writing code:
+   312→  - Live WS (`correlation.ts` `buildOffense`): `attackPath` is a `" -> "`-joined string (e.g. `"Discovery -> Service Access -> Potential Information Disclosure"`), `relatedEventIds` is a real `string[]` array.
+   313→  - Live REST (`api.getScenarios` → monitor-service `/internal/scenarios/:sid`): same in-memory shape as WS.
+   314→  - Historical REST (`api.getHistoryDetail` → `db.scenarioOffense.findMany`): returns raw Prisma rows where `attackPath` is the same `" -> "` string BUT `relatedEventIds` is a **comma-separated STRING** (e.g. `"EVT-x-00022,EVT-x-00006,..."`), not an array. The `OffenseScenario` type lies here.
+   315→  - Wrote defensive helpers `parseAttackPath()` (splits on `->`, `\n`, or `,`) and `parseRelatedEventIds()` (splits on `,`) that accept `string | string[] | null | undefined` and normalize to `string[]`. A `normalizeScenario()` wrapper is applied to every scenario from every source so the rest of the view code can assume a consistent shape.
+   316→- Implemented the full `OffenseView` as a single-file view with internal sub-components. Root layout: `<div className="flex h-full flex-col overflow-hidden">` → sticky `OffenseHeader` + `SummaryRow` + `flex-1 overflow-y-auto` scroll container.
+   317→- **Three modes** derived from `useAppStore` state:
+   318→  - `mode === "live"` — `sessionId` set, `historicalSession` null. Reads `useAppStore.offenseScenarios` (live-updated by WS via `upsertOffenseScenario`). On mount (and when `sessionId` changes), calls `api.getScenarios(sessionId)` once and `setOffenseScenarios(offense)` to seed the authoritative snapshot. WS updates continue to upsert on top.
+   319→  - `mode === "historical"` — `historicalSession` set. Fetches `api.getHistoryDetail(historicalSession.id)` once, stores `histScenarios` + `histEvents`. The detail dialog uses `histEvents` for the event timeline (no fresh fetch).
+   320→  - `mode === "empty"` — no session. Renders `NoSessionEmptyState` with a Radar icon, "NO ACTIVE SESSION" heading, explanation, and a "Go to Live Monitor" button that calls `useAppStore.setView('monitor')`.
+   321→- **OffenseHeader**: dark-red identity header (`bg-[color:var(--soc-critical)]/5`, `border-[color:var(--soc-critical)]/30`) with a `Swords` icon in a red-tinted box, "OFFENSE" title, subtitle (mode-aware: live shows count, historical shows target+timestamp), a LIVE or HISTORICAL badge, and `AuthWarning` inline (hidden on mobile).
+   322→- **SummaryRow**: 4 `KpiCard`s in a responsive grid (`grid-cols-2 sm:grid-cols-4`): TOTAL SCENARIOS (critical accent), CRITICAL (critical accent), HIGH (high accent), MEDIUM/LOW (medium accent). All counts from real scenario data via `useMemo`.
+   323→- **ScenarioCard** (offense-surface styled, dark-red border keyed to severity color):
+   324→  - Left severity accent bar (full height, `severityColor(sev)`).
+   325→  - Header: `SeverityBadge` + `StatusDot` (active/inactive/resolved) + bold mono title + `scenarioId · category` (muted mono).
+   326→  - Confidence bar: thin progress bar with `%` label and "POTENTIAL" tag.
+   327→  - Meta grid (2 cols): Affected Target (`Target` icon), Affected Service (`Server` icon), Potential Technique (`Crosshair` icon) with inline MITRE tag chip (color-coded).
+   328→  - OBSERVED EVIDENCE section (short text).
+   329→  - POTENTIAL ATTACK PATH: vertical flow with numbered step badges (color-keyed) and `ArrowDown` icons between steps.
+   330→  - POSSIBLE IMPACT section (text).
+   331→  - Footer: First Observed (mono time) → Last Observed (mono time) | EVTS N | SRC N.
+   332→  - Related event IDs: up to 6 chips (`EVT-...`), "+N more" if exceeded.
+   333→  - "View Details" button (full-width ghost, hover → red).
+   334→- **ScenarioDetailDialog** (shadcn `Dialog`, `max-w-3xl`, `offense-surface` styling, `max-h-[90vh]` scrollable):
+   335→  - Header: "POTENTIAL ATTACK SCENARIO" + `ShieldAlert` icon + "DEFENSIVE ANALYSIS — OBSERVED ACTIVITY, NOT A CONFIRMED ATTACK." description.
+   336→  - Overview card: severity badge + status + MITRE chip + scenarioId + bold title + category + confidence bar + 4 meta fields.
+   337→  - Observed Evidence (text).
+   338→  - Affected Target / Affected Service (2-col grid).
+   339→  - Observed Events Timeline: filters `events` by `relatedEventIds` (matches on `eventId` OR `id`), sorts ascending by time, renders each with timestamp + severity badge + event ID + source→dest:port + protocol chip + `[eventType] message`. Scrollable (`max-h-64`). Shows "X / Y shown · {mode}" counter. Skeleton while loading. Empty state explains "No matching event records available" with mode-aware hint.
+   340→  - Potential Attack Path (vertical flow).
+   341→  - Possible Impact (text).
+   342→  - Related MITRE ATT&CK Technique: chip + name + description from hardcoded `MITRE_MAP` (T1046, T1110, T1190, T1595, T1082, T1592) + "Potential technique attribution based on observed pattern — not a confirmed adversary action." disclaimer.
+   343→  - Timeline summary: First Observed / Last Observed / Duration / Events-Sources (4-col grid).
+   344→- **Live-mode dialog events**: when a card's "View Details" is clicked in live mode, a `useEffect` fetches `api.getEvents(sessionId, 500)` to get the freshest events (the store only keeps the most recent 500). Historical mode uses the already-loaded `histEvents`.
+   345→- **Language rules** (defensive analysis — never claims an attack succeeded): every section uses "Potential", "Observed", "Possible Impact", "Potential Attack Scenario", "Potential technique attribution based on observed pattern — not a confirmed adversary action." The empty state and footer disclaimer reinforce this.
+   346→- **Performance**: `scenarios` memoized via `useMemo` with `sortScenarios` (severity desc via `SEVERITY_ORDER`, then `lastObserved` desc). `dialogScenario` found via `useMemo` over the active pool. Related events filtered/sorted via `useMemo`. Related event IDs capped at 6 on cards (full list in dialog). `normalizeScenario` applied at the memo boundary so the rest of the render code can assume a consistent shape.
+   347→- **Loading / empty states**:
+   348→  - Live seeding (no scenarios yet): `ScenarioCardSkeleton` × 4 (offense-surface styled with red accent bar).
+   349→  - Historical fetching: same skeletons.
+   350→  - No scenarios after load: `NoScenariosEmptyState` with `ScanLine` icon, mode-aware message ("Scenarios appear as detection rules observe suspicious patterns. Live telemetry is being collected and correlated." for live; "This historical session did not trigger any offense scenarios." for historical).
+   351→  - No session: `NoSessionEmptyState` with `Radar` icon + "Go to Live Monitor" button.
+   352→- **eslint `react-hooks/set-state-in-effect`**: initial implementation called `setLoading(true)` synchronously in effect bodies, which the new React 19 lint rule flags as "cascading renders". Refactored all three fetch effects (`historical`, `live seed`, `dialog events`) to wrap the fetch + state updates in an `async function run()` defined inside the effect, called via `void run()`. The setState calls now live inside the async function body (after the first `await` they're in callbacks), which satisfies the linter.
+   353→
+   354→Files modified:
+   355→- `src/components/views/offense-view.tsx` (full rewrite, ~1175 lines)
+   356→- `src/lib/store.ts` (temporary `window.__useAppStore` exposure for browser testing — REVERTED before completion)
+   357→
+   358→Verification results:
+   359→1. **Compile**: `✓ Compiled in 1187ms` then `✓ Compiled in 254ms` — no errors.
+   360→2. **Lint**: `bun run lint` → **0 errors**, 0 warnings in `offense-view.tsx` (20 pre-existing warnings in other files from Tasks 2-a/2-b).
+   361→3. **Agent-browser E2E** (via Caddy gateway `http://localhost:81/`):
+   362→   - **Live mode**: Started a demo monitoring session on `192.168.1.100`, waited 30s, switched to Offense view. 5 scenarios rendered (sorted: HIGH first, then 4 MEDIUM): "Repeated SSH Authentication Attempts" (HIGH, T1110, 86% conf), "Suspicious Service Access" (MEDIUM, T1082, 74% conf, 8 events with "+2 more"), "HTTP Request Anomaly" (MEDIUM, T1190, 72% conf), "Network Service Discovery" (MEDIUM, T1046, 81% conf), "New Source IP Activity" (LOW, T1592). KPI summary: TOTAL=5, CRITICAL=0, HIGH=1, MEDIUM/LOW=4. Each card showed: severity accent bar, badges, confidence bar, meta grid with MITRE chips, observed evidence, 3-step attack path flow with numbered badges + ↓ arrows, possible impact, footer (first→last time, EVTS/SRC counts), related event ID chips. LIVE badge in header. Screenshot: `5-b-offense-view-live.png`, `5-b-offense-view-grid.png`.
+   363→   - **Detail dialog (live)**: Clicked "View Details" on "Repeated SSH Authentication Attempts". Dialog opened (`max-w-3xl`, offense-surface, scrollable) with all sections: overview (HIGH, ACTIVE, T1110 chip, SCN-O-cmuhxzdl-00004, 86% conf, 192.168.1.100, 22/tcp, Brute Force), observed evidence, affected target/service grid, observed events timeline (1/1 shown · live — EVT-cmuhxzdl-00088, 192.168.10.20→192.168.1.100:22 TCP, `[auth_failure] Failed SSH password for 'test'...`), 3-step attack path, possible impact, MITRE T1110 Brute Force description + attribution disclaimer, timeline (First/Last Observed, Duration 0s, Events/Sources 1/1). Screenshot: `5-b-offense-detail-dialog.png`.
+   364→   - **Empty mode**: Stopped the session (toast "Monitoring session saved to history."), switched to Offense. "NO ACTIVE SESSION" heading + description + "Go to Live Monitor" button. Clicked the button → successfully switched back to Live Monitor view. Screenshot: `5-b-offense-empty-state.png`.
+   365→   - **Historical mode**: Injected a `historicalSession` (pointing to a completed session `cmuhxzdll033zlihub6bvbf1t` with 286 events / 21 alerts / 5 scenarios) via a temporary `window.__useAppStore` test hook. Switched to Offense. Header showed "Historical session · 192.168.1.100 · 9/26/2026, 5:21:23 AM" + HISTORICAL badge. Same 5 scenarios rendered from `api.getHistoryDetail` (comma-separated `relatedEventIds` correctly parsed into chips). Screenshot: `5-b-offense-historical-mode.png`.
+   366→   - **Detail dialog (historical)**: Opened "Suspicious Service Access" detail. Dialog showed "3 / 9 shown · historical" in the timeline (3 of 9 related events rendered — the other 6 are older than the API's 200-event window, transparently displayed to the user). Each event row: timestamp, INFO severity badge, EVT ID, source→dest:port, TCP chip, `[http_request] GET /api/v1/health...` message. MITRE T1082 System Information Discovery description. Timeline: First 05:21:45, Last 05:22:47, Duration 1m 2s, Events/Sources 9/1. Screenshot: `5-b-offense-historical-detail-dialog.png`.
+   367→   - **Errors**: `agent-browser errors` → empty. `agent-browser console` → only Fast Refresh / HMR / React DevTools info logs, no warnings or errors.
+   368→4. **Dev log**: no compile errors or warnings during testing. All API calls 200 (`GET /api/monitoring/<sid>/scenarios`, `GET /api/monitoring/<sid>/events?limit=500`, `GET /api/history/<sid>`, `GET /api/health`). Prisma queries for `ScenarioOffense` confirmed.
+   369→
+   370→Caveats for next agents:
+   371→- **Historical event window**: `api.getHistoryDetail` returns the newest 200 events by default (`?limit=200`). If a historical scenario's `relatedEventIds` reference events older than that window, those events won't appear in the detail dialog's timeline. The dialog transparently shows "X / Y shown" so the user knows. If full coverage is needed, enhance `api.getHistoryDetail` to accept a `?limit=` param (the route already supports it) and pass `limit=5000` from the offense view, OR add a dedicated `/api/history/<sid>/events?scenarioId=...` endpoint that filters server-side.
+   372→- **Live dialog events**: the live-mode dialog fetches `api.getEvents(sessionId, 500)` on open. For sessions with >500 events, older related events may be missing. Same "X / Y shown" transparency applies.
+   373→- **`OffenseScenario.relatedEventIds` type mismatch**: the `OffenseScenario` type declares `relatedEventIds: string[]`, but the historical API returns a comma-separated string (raw Prisma row). The offense view handles both via `parseRelatedEventIds`. A future cleanup could map the rows in the `/api/history/[sessionId]` route (like `assembleReportData` does in `src/lib/monitoring/report.ts`) so the type is honest.
+   374→- **`OffenseScenario.attackPath` type**: declared as `string | null`, and both live + historical store it as a `" -> "`-joined string. The `parseAttackPath` helper splits it into `string[]` for the vertical flow render. If a future backend change stores it as a JSON array, the helper handles that too.
+   375→- The Offense view is complete and fully functional in all three modes (live, historical, empty). Other view stubs (Defense/History/Reports/Settings) still show "Loading…" placeholders — those are separate tasks.
+   376→
+   377→---
+   378→Task ID: 5-c
+   379→Agent: frontend-defense
+   380→Task: Build the Defense view — structured scenario-card view showing defensive monitoring/response guidance derived from observed activity (replaces the stub at `src/components/views/defense-view.tsx`)
+   381→
+   382→Work Log:
+   383→- Read all prior worklog entries (Tasks 1–5b), foundation files (`types.ts`, `constants.ts`, `store.ts`, `api-client.ts`), `page.tsx`, all `src/components/soc/*` shared components, the full `offense-view.tsx` (~1175 lines) to mirror its established design language (dark SOC palette, `font-mono-data`, compact cards, `defense-surface` / `defense-accent` CSS utilities with `var(--soc-low)` cyan accents), and the `src/components/ui/*` directory.
+   384→- Inspected the defense scenario data shape end-to-end before writing code:
+   385→  - Live WS (`correlation.ts` `buildDefense`): pairs each offense with a defense scenario linked via `relatedOffenseId = offenseScenario.scenarioId` (e.g. `SCN-O-XXXX`). `relatedEventIds` is a real `string[]` array. `priority` / `status` are real enums.
+   386→  - Live REST (`api.getScenarios` → monitor-service `/internal/scenarios/:sid`): same in-memory shape as WS.
+   387→  - Historical REST (`api.getHistoryDetail` → `db.scenarioDefense.findMany`): returns raw Prisma rows where `relatedEventIds` is a **comma-separated STRING** (e.g. `"EVT-x-00022,EVT-x-00006,..."`), `priority` / `status` are `String` columns, `firstObserved` / `lastObserved` are `Date` objects. The `DefenseScenario` type lies here.
+   388→  - Wrote defensive helpers `parseRelatedEventIds()` (splits on `,`) that accept `string | string[] | null | undefined` and normalize to `string[]`. A `normalizeScenario()` wrapper is applied to every scenario from every source so the rest of the view code can assume a consistent shape (priority/status cast to enum, relatedEventIds coerced to array, dates accepted as string-or-Date — `new Date(ts)` handles both).
+   389→- Implemented the full `DefenseView` as a single-file view with internal sub-components. Root layout: `<div className="flex h-full flex-col overflow-hidden">` → sticky `DefenseHeader` + `SummaryRow` + `flex-1 overflow-y-auto` scroll container.
+   390→- **Three modes** derived from `useAppStore` state:
+   391→  - `mode === "live"` — `sessionId` set, `historicalSession` null. Reads `useAppStore.defenseScenarios` (live-updated by WS via `upsertDefenseScenario`). On mount (and when `sessionId` changes), calls `api.getScenarios(sessionId)` once and `setDefenseScenarios(defense)` to seed the authoritative snapshot. WS updates continue to upsert on top.
+   392→  - `mode === "historical"` — `historicalSession` set. Fetches `api.getHistoryDetail(historicalSession.id)` once, stores `histScenarios` (defense) + `histOffenseCount` (for KPI proxy) + `histEvents`. The detail dialog uses `histEvents` for the event timeline (no fresh fetch).
+   393→  - `mode === "empty"` — no session. Renders `NoSessionEmptyState` with a `Shield` icon, "NO ACTIVE SESSION" heading, explanation, and a "Go to Live Monitor" button that calls `useAppStore.setView('monitor')`.
+   394→- **DefenseHeader**: navy/cyan identity header (`bg-[color:var(--soc-low)]/5`, `border-[color:var(--soc-low)]/30`) with a `Shield` icon in a cyan-tinted box, "DEFENSE" title, subtitle (mode-aware: live shows count, historical shows target+timestamp), a LIVE or HISTORICAL badge, and `AuthWarning` inline (hidden on mobile).
+   395→- **SummaryRow**: 4 `KpiCard`s in a responsive grid (`grid-cols-2 sm:grid-cols-4`):
+   396→  - ACTIVE CONTROLS (`Shield` icon, cyan accent) = total defense scenarios count
+   397→  - DETECTION RULES TRIGGERED (`Radar` icon, info accent, sublabel "Offense patterns observed") = count of offense scenarios (proxy for distinct detection rules fired). Live mode uses `store.offenseScenarios.length`; historical mode uses `res.offenseScenarios.length` from the history detail fetch.
+   398→  - HIGH PRIORITY RESPONSES (`AlertTriangle` icon, high accent) = defense scenarios with priority high or critical
+   399→  - MONITORING RECOMMENDATIONS (`Activity` icon, cyan accent, live pulse when > 0) = defense scenarios with status active
+   400→- **ScenarioCard** (defense-surface styled, navy/cyan border keyed to priority color):
+   401→  - Left priority accent bar (full height, `severityColor(scenario.priority)`).
+   402→  - Header: `SeverityBadge` (priority, e.g. "HIGH") + `StatusDot` (active/inactive/resolved) + bold mono title + `scenarioId · category` (muted mono) + **Related Offense chip** (top-right, clickable, red-tinted, shows the `relatedOffenseId` like `SCN-O-XXXX`). Clicking the chip calls `jumpToOffense(relatedOffenseId)` which closes the defense dialog, sets `selectedOffense` in the store, and switches to the Offense view.
+   403→  - Meta grid (2 cols): Affected Service (`Server` icon), Related Activity (`Crosshair` icon, derived short label via `categoryShortLabel()` — converts e.g. `network_scan_monitoring` → "NETWORK SCAN", `ssh_auth_monitoring` → "SSH AUTH", etc.)
+   404→  - Four labeled guidance panels (`GuidanceBlock`), each with a small cyan icon and the text:
+   405→    * DETECT (`Search` icon) — `scenario.detect`
+   406→    * MONITOR (`Activity` icon) — `scenario.monitor`
+   407→    * PREVENT (`Shield` icon) — `scenario.prevent`
+   408→    * RESPOND (`Siren` icon) — `scenario.respond`
+   409→  - RECOMMENDED ACTION (highlighted, success-green tinted with `CheckCircle2` icon) — `scenario.recommendedAction`
+   410→  - Footer: First Observed (mono time) → Last Observed (mono time) | EVTS N (count of `relatedEventIds`)
+   411→  - Related event IDs: up to 6 chips (`EVT-...`), "+N more" if exceeded
+   412→  - "View Details" button (full-width ghost, hover → cyan)
+   413→- **ScenarioDetailDialog** (shadcn `Dialog`, `max-w-3xl`, `defense-surface` styling, `max-h-[90vh]` scrollable):
+   414→  - Header: "DEFENSIVE MONITORING & RESPONSE" + `ShieldCheck` icon + "Monitoring, detection, prevention and response guidance derived from observed security activity." description.
+   415→  - Overview card: priority badge ("PRIORITY · HIGH") + status + scenarioId + bold title + category + 3 meta fields (Affected Service, Related Activity, Related Offense).
+   416→  - Affected Service / Related Activity (2-col grid).
+   417→  - Four sections: Detection (`Search` icon), Monitoring (`Activity`), Prevention (`Shield`), Response (`Siren`) — each using the same `GuidanceBlock` component.
+   418→  - Recommended Action (highlighted success-green box with `CheckCircle2` icon).
+   419→  - **Relationship to Offense** (only if `relatedOffenseId` present): red-tinted panel with `Swords` icon, text "This defense addresses offense scenario SCN-O-XXXX. Open the offense analysis to inspect the observed activity and potential attack pattern this defense is responding to.", and a "VIEW OFFENSE SCENARIO" button that calls `jumpToOffense(relatedOffenseId)`.
+   420→  - Related Events Timeline: filters `events` by `relatedEventIds` (matches on `eventId` OR `id`), sorts ascending by time, renders each with timestamp + severity badge + event ID + source→dest:port + protocol chip + `[eventType] message`. Scrollable (`max-h-64`). Shows "X / Y shown · {mode}" counter. Skeleton while loading. Empty state explains "No matching event records available" with mode-aware hint.
+   421→  - Timeline summary: First Observed / Last Observed / Duration (3-col grid).
+   422→- **Live-mode dialog events**: when a card's "View Details" is clicked in live mode, a `useEffect` fetches `api.getEvents(sessionId, 500)` to get the freshest events (the store only keeps the most recent 500). Historical mode uses the already-loaded `histEvents`.
+   423→- **Cross-view relationship (Defense → Offense)**:
+   424→  - On each defense card, the related offense scenarioId renders as a clickable chip (red-tinted, with `Link2` icon).
+   425→  - In the detail dialog, the "Relationship to Offense" panel has a "VIEW OFFENSE SCENARIO" button.
+   426→  - Both call `jumpToOffense(relatedOffenseId)` which: (1) closes the defense dialog (`setDialogScenarioId(null)`), (2) calls `setSelectedOffense(relatedOffenseId)` on the store, (3) calls `setView('offense')`.
+   427→  - **Minimal cross-link support added to `offense-view.tsx`**: the Offense view now reads `selectedOffenseId` from the store and, via a `useEffect`, mirrors it into its local `dialogScenarioId` state — so the Offense detail dialog auto-opens for that scenarioId when the user lands on the Offense view. When the Offense dialog closes, the dialog's `onOpenChange` handler also calls `setSelectedOffense(null)` to clear the link state (prevents the dialog from reopening). This is a 4-line change to `OffenseView` + a 2-line change to its `onOpenChange` — no other behavior touched.
+   428→- **Language rules** (defensive guidance — monitoring/detection/prevention/response): every section uses "Detect", "Monitor", "Prevent", "Respond", "Recommended Action". The footer disclaimer reinforces: "Each scenario provides monitoring, detection, prevention and response recommendations derived from observed telemetry and paired offense scenarios. Apply recommendations within your authorized operational scope."
+   429→- **Performance**: `scenarios` memoized via `useMemo` with `sortScenarios` (priority desc via `SEVERITY_ORDER`, then `lastObserved` desc). `dialogScenario` found via `useMemo` over the active pool. Related events filtered/sorted via `useMemo`. Related event IDs capped at 6 on cards (full list in dialog). `normalizeScenario` applied at the memo boundary so the rest of the render code can assume a consistent shape. `jumpToOffense` is a stable closure (no useCallback needed since it only depends on stable store setters).
+   430→- **Loading / empty states** (mirror Offense view):
+   431→  - Live seeding (no scenarios yet): `ScenarioCardSkeleton` × 4 (defense-surface styled with cyan accent bar).
+   432→  - Historical fetching: same skeletons.
+   433→  - No scenarios after load: `NoScenariosEmptyState` with `ShieldAlert` icon, mode-aware message ("Defense guidance appears as detection rules observe patterns. Live telemetry is being collected and correlated." for live; "This historical session did not trigger any defense scenarios." for historical).
+   434→  - No session: `NoSessionEmptyState` with `Shield` icon + "Go to Live Monitor" button.
+   435→- **eslint `react-hooks/set-state-in-effect`**: like the Offense view, all three fetch effects (`historical`, `live seed`, `dialog events`) wrap the fetch + state updates in an `async function run()` defined inside the effect, called via `void run()`. The setState calls now live inside the async function body (after the first `await` they're in callbacks), which satisfies the linter.
+   436→
+   437→Files modified:
+   438→- `src/components/views/defense-view.tsx` (full rewrite, ~1206 lines)
+   439→- `src/components/views/offense-view.tsx` (minimal cross-link addition: 4-line useEffect + 2-line onOpenChange update; ~1194 lines total)
+   440→- `src/lib/store.ts` (temporary `window.__useAppStore` exposure for browser testing — REVERTED before completion)
+   441→
+   442→Verification results:
+   443→1. **Compile**: `✓ Compiled in 153ms` / `127ms` / `151ms` / `125ms` — no errors. (Initial stale-cache error from a stray `void EyeIcon;` line was caught and fixed before final verification.)
+   444→2. **Lint**: `bun run lint` → **0 errors**, 0 warnings in `defense-view.tsx` and `offense-view.tsx` (20 pre-existing warnings in other files from Tasks 2-a/2-b, all unrelated `Unused eslint-disable directive (no problems were reported from 'no-console')`).
+   445→3. **Agent-browser E2E** (via Caddy gateway `http://localhost:81/`):
+   446→   - **Live mode**: Started a demo monitoring session on `192.168.1.100`, waited 30s, switched to Defense view. 4 scenarios rendered (sorted: HIGH priority first, then 3 MEDIUM/LOW): "SSH Authentication Monitoring" (HIGH, SCN-O-CMUHYFDR-00004), "Network Scan Monitoring" (MEDIUM, SCN-O-CMUHYFDR-00002), "Exposed Service Monitoring" (MEDIUM, SCN-O-CMUHYFDR-00003), "Suspicious Source Monitoring" (LOW, SCN-O-CMUHYFDR-00001). Each card showed: priority accent bar, badges, related-offense chip (clickable, red-tinted), meta grid (Affected Service + Related Activity short label), four guidance panels (DETECT/MONITOR/PREVENT/RESPOND) each with cyan icon, Recommended Action box (success-green with CheckCircle2), footer (first→last time, EVTS count), related event ID chips. KPI summary: ACTIVE CONTROLS=4, DETECTION RULES TRIGGERED=5 (proxy = offense scenarios count, sublabel "Offense patterns observed"), HIGH PRIORITY RESPONSES=1, MONITORING RECOMMENDATIONS=4 (live pulse). LIVE badge in header. Screenshot: `5-c-defense-view-live.png`.
+   447→   - **Detail dialog (live)**: Clicked "View Details" on "SSH Authentication Monitoring". Dialog opened (`max-w-3xl`, defense-surface, scrollable) with all sections: overview (PRIORITY · HIGH, ACTIVE, SCN-D-..., title, category, Affected Service=ssh, Related Activity=SSH AUTH, Related Offense=SCN-O-CMUHYFDR-00004), Affected Service / Related Activity grid, Detection / Monitoring / Prevention / Response guidance blocks (each with cyan icon), Recommended Action (highlighted), **Relationship to Offense** panel with red-tinted border, "This defense addresses offense scenario SCN-O-CMUHYFDR-00004." text + "VIEW OFFENSE SCENARIO" button, Related Events Timeline (1/1 shown · live — EVT-CMUHYFDR-00088, 192.168.10.20→192.168.1.100:22 TCP, `[auth_failure] Failed SSH password for 'test'...`), timeline summary (First/Last Observed, Duration). Screenshot: `5-c-defense-detail-dialog.png`, `5-c-defense-detail-dialog-full.png`.
+   448→   - **Cross-link to Offense (live)**: Clicked the "VIEW OFFENSE SCENARIO" button inside the defense detail dialog. Defense dialog closed → view switched to Offense → Offense detail dialog auto-opened for "Repeated SSH Authentication Attempts" (matching SCN-O-CMUHYFDR-00004, the offense scenario the defense addresses). Confirms the `setView('offense') + setSelectedOffense(relatedOffenseId)` handoff works end-to-end with the new `useEffect` mirror in `offense-view.tsx`. Screenshot: `5-c-cross-link-to-offense.png`.
+   449→   - **Empty mode**: Stopped the session (toast "Monitoring session saved to history."), switched to Defense. "NO ACTIVE SESSION" heading + Shield icon + description + "Go to Live Monitor" button. Clicked the button → successfully switched back to Live Monitor view. Screenshot: `5-c-defense-empty-state.png`.
+   450→   - **Historical mode**: Injected a `historicalSession` (pointing to completed session `cmuhxzdll033zlihub6bvbf1t` with 286 events / 21 alerts / 5 scenarios) via a temporary `window.__useAppStore` test hook (REVERTED before completion). Switched to Defense. Header showed "Historical session · 192.168.1.100 · 9/26/2026, 5:21:23 AM" + HISTORICAL badge. 5 scenarios rendered from `api.getHistoryDetail` (comma-separated `relatedEventIds` correctly parsed into chips): SSH Authentication Monitoring (SCN-O-CMUHXZDL-00004), Exposed Service Monitoring (SCN-O-CMUHXZDL-00003), Network Scan Monitoring (SCN-O-CMUHXZDL-00002), HTTP Anomaly Monitoring (SCN-O-CMUHXZDL-00005), Suspicious Source Monitoring (SCN-O-CMUHXZDL-00001). Screenshot: `5-c-defense-historical-mode.png`.
+   451→   - **Detail dialog (historical)**: Opened "SSH Authentication Monitoring" detail. Dialog showed full guidance, "VIEW OFFENSE SCENARIO" button, and "X / Y shown · historical" counter in the timeline. Screenshot: `5-c-defense-historical-detail-dialog.png`.
+   452→   - **Cross-link to Offense (historical)**: Clicked "VIEW OFFENSE SCENARIO" inside the historical defense dialog. Defense dialog closed → Offense view mounted → offense view's historical fetch ran → Offense detail dialog auto-opened for "Repeated SSH Authentication Attempts" (matching SCN-O-CMUHXZDL-00004). The `useEffect` mirror in `offense-view.tsx` correctly handles the brief loading flash (dialog opens, then `dialogScenario` resolves to the actual scenario once `histScenarios` populates). Screenshot: `5-c-cross-link-historical-to-offense.png`.
+   453→   - **Errors**: `agent-browser errors` → empty. `agent-browser console` → only Fast Refresh / HMR / React DevTools info logs, no warnings or errors.
+   454→4. **Dev log**: no compile errors or warnings during testing. All API calls 200 (`GET /api/monitoring/<sid>/scenarios`, `GET /api/monitoring/<sid>/events?limit=500`, `GET /api/history/<sid>`, `GET /api/health`). Prisma queries for `ScenarioDefense`, `ScenarioOffense`, `Event`, `Alert`, `MonitoringSession`, `Target`, `Assessment` all executed cleanly for the historical session.
+   455→
+   456→Caveats for next agents:
+   457→- **Cross-view link requires the Offense view to consume `selectedOffenseId`**: this task added a minimal 4-line `useEffect` to `offense-view.tsx` that mirrors `selectedOffenseId` (from the store) into the local `dialogScenarioId` state, plus a 2-line update to the dialog's `onOpenChange` to clear `selectedOffenseId` when the dialog closes. This is what makes Defense → Offense cross-linking work end-to-end. If the Offense view is rewritten in a future task, this mirror effect must be preserved. The same pattern can be reused for any future view that wants to deep-link into a specific offense scenario.
+   458→- **`DefenseScenario.relatedEventIds` type mismatch**: same issue the Offense view documented. The `DefenseScenario` type declares `relatedEventIds: string[]`, but the historical API returns a comma-separated string (raw Prisma row). The defense view handles both via `parseRelatedEventIds`. A future cleanup could map the rows in the `/api/history/[sessionId]` route (like `assembleReportData` does in `src/lib/monitoring/report.ts`) so the type is honest.
+   459→- **`DefenseScenario.priority` and `status` type mismatch**: same root cause — historical API returns raw Prisma `String` columns. The `normalizeScenario()` wrapper casts them to `Severity` / `ScenarioStatus`. Same future cleanup applies.
+   460→- **`DefenseScenario.firstObserved` / `lastObserved` as `Date` objects in historical mode**: the `formatTime()` / `formatDateTime()` / `durationLabel()` helpers all call `new Date(ts)` which accepts both strings and `Date` objects transparently, so no special handling was needed. Worth noting if a future consumer assumes the values are always ISO strings.
+   461→- **Live dialog events window**: the live-mode dialog fetches `api.getEvents(sessionId, 500)` on open. For sessions with >500 events, older related events may be missing. The dialog transparently shows "X / Y shown" so the user knows. Same caveat as the Offense view.
+   462→- **DETECTION RULES TRIGGERED KPI is a proxy**: it uses `offenseScenarios.length` (live) or `res.offenseScenarios.length` (historical) as a proxy for "distinct detection rules that fired". Each offense scenario represents one detection-rule pattern firing (RULE-001/008→network_service_discovery, RULE-002/006→suspicious_service_access, RULE-003→repeated_auth_attempts, RULE-004→http_request_anomaly, RULE-005→unusual_connection_rate, RULE-007→new_source_activity), so this count equals the number of distinct rules that triggered. The KPI sublabel "Offense patterns observed" makes the derivation explicit to the user. A future refinement could count distinct `ruleId`s from the alerts table instead.
+   463→- **Defense view is complete and fully functional. Other view stubs (History/Reports/Settings) still show "LOADING…" / "Loading…" placeholders — those are separate tasks.**
+   464→

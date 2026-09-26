@@ -1,0 +1,1156 @@
+"use client";
+
+import { useMemo, useState, type ReactNode } from "react";
+import {
+  Activity,
+  Square,
+  Pause,
+  Play,
+  Trash2,
+  Search,
+  ChevronDown,
+  ChevronRight,
+  Shield,
+  Network as NetworkIcon,
+  AlertTriangle,
+  AlertOctagon,
+  AlertCircle,
+  ShieldAlert,
+  Zap,
+  Gauge,
+  Server,
+  LucideIcon,
+} from "lucide-react";
+import {
+  AreaChart,
+  Area,
+  ResponsiveContainer,
+  XAxis,
+  YAxis,
+  Tooltip,
+} from "recharts";
+import { useAppStore } from "@/lib/store";
+import { api } from "@/lib/api-client";
+import { Panel } from "@/components/soc/panel";
+import { KpiCard } from "@/components/soc/kpi-card";
+import { SeverityBadge } from "@/components/soc/severity-badge";
+import { StatusDot } from "@/components/soc/status-dot";
+import { AuthWarning } from "@/components/soc/auth-warning";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
+import {
+  Collapsible,
+  CollapsibleContent,
+  CollapsibleTrigger,
+} from "@/components/ui/collapsible";
+import { Skeleton } from "@/components/ui/skeleton";
+import { toast } from "sonner";
+import { cn } from "@/lib/utils";
+import { severityColor } from "@/lib/constants";
+import type {
+  Severity,
+  SecurityEvent,
+  ServiceInfo,
+  TopItem,
+  ProtocolDistribution,
+} from "@/lib/types";
+
+// ============================================================
+// Helpers
+// ============================================================
+
+function formatTime(ts: string): string {
+  try {
+    const d = new Date(ts);
+    if (isNaN(d.getTime())) return "--:--:--";
+    return d.toLocaleTimeString("en-GB", { hour12: false });
+  } catch {
+    return "--:--:--";
+  }
+}
+
+function portAccentColor(port: number): string {
+  if (port === 22 || port === 3389) return "var(--soc-medium)";
+  if ([80, 443, 8080, 8443].includes(port)) return "var(--soc-low)";
+  if ([3306, 5432, 6379, 1433, 27017, 1521].includes(port)) return "var(--soc-critical)";
+  if ([21, 23, 445, 139, 137].includes(port)) return "var(--soc-critical)";
+  if (port === 53) return "var(--soc-info)";
+  return "var(--foreground)";
+}
+
+const PROTOCOL_COLORS: Record<string, string> = {
+  TCP: "var(--soc-low)",
+  UDP: "var(--soc-medium)",
+  HTTP: "var(--soc-success)",
+  HTTPS: "var(--soc-info)",
+  ICMP: "var(--soc-critical)",
+  SSH: "var(--soc-high)",
+  FTP: "var(--soc-high)",
+  DNS: "var(--soc-info)",
+  SMTP: "var(--soc-medium)",
+};
+
+function protoColor(p?: string | null): string {
+  if (!p) return "var(--muted-foreground)";
+  return PROTOCOL_COLORS[p.toUpperCase()] ?? "var(--soc-low)";
+}
+
+function protoBadgeStyle(p?: string | null): React.CSSProperties {
+  const c = protoColor(p);
+  return { color: c, backgroundColor: `color-mix(in oklch, ${c} 15%, transparent)` };
+}
+
+function statusIsActive(status: string): boolean {
+  return (
+    status === "monitoring" ||
+    status === "scanning" ||
+    status === "initializing" ||
+    status === "reconnecting"
+  );
+}
+
+const SEV_FILTERS: Array<{ key: Severity | "all"; label: string }> = [
+  { key: "all", label: "All" },
+  { key: "critical", label: "Critical" },
+  { key: "high", label: "High" },
+  { key: "medium", label: "Medium" },
+  { key: "low", label: "Low" },
+  { key: "info", label: "Info" },
+];
+
+const EVENT_TYPES: string[] = [
+  "all",
+  "connection",
+  "auth_failure",
+  "http_request",
+  "port_probe",
+  "service_access",
+  "firewall_deny",
+  "log_entry",
+];
+
+function fmt(n: number | undefined | null): string {
+  if (n == null) return "—";
+  return n.toLocaleString();
+}
+
+// ============================================================
+// Sub-components
+// ============================================================
+
+function EmptyHint({ text = "No data yet" }: { text?: string }) {
+  return (
+    <div className="flex h-full items-center justify-center font-mono-data text-[10px] uppercase tracking-wider text-muted-foreground/60">
+      {text}
+    </div>
+  );
+}
+
+function ChartTooltip({
+  active,
+  payload,
+  label,
+  color,
+}: {
+  active?: boolean;
+  payload?: Array<{ value?: number; name?: string }>;
+  label?: string;
+  color?: string;
+}) {
+  if (!active || !payload || payload.length === 0) return null;
+  return (
+    <div className="rounded-md border border-border/60 bg-popover px-2 py-1 text-xs shadow-md">
+      {label && (
+        <div className="font-mono-data text-[9px] text-muted-foreground">{label}</div>
+      )}
+      <div
+        className="font-mono-data font-bold"
+        style={{ color: color ?? "var(--foreground)" }}
+      >
+        {payload[0]?.value ?? "—"}
+      </div>
+    </div>
+  );
+}
+
+function MiniAreaChart({
+  data,
+  color,
+  id,
+}: {
+  data: { t: string; v: number }[];
+  color: string;
+  id: string;
+}) {
+  if (!data || data.length === 0) return <EmptyHint />;
+  return (
+    <ResponsiveContainer width="100%" height="100%">
+      <AreaChart data={data} margin={{ top: 4, right: 4, bottom: 0, left: 4 }}>
+        <defs>
+          <linearGradient id={id} x1="0" y1="0" x2="0" y2="1">
+            <stop offset="0%" stopColor={color} stopOpacity={0.45} />
+            <stop offset="100%" stopColor={color} stopOpacity={0} />
+          </linearGradient>
+        </defs>
+        <XAxis dataKey="t" hide />
+        <YAxis hide domain={[0, "auto"]} />
+        <Tooltip
+          content={<ChartTooltip color={color} />}
+          cursor={{ stroke: color, strokeOpacity: 0.3, strokeWidth: 1 }}
+        />
+        <Area
+          type="monotone"
+          dataKey="v"
+          stroke={color}
+          strokeWidth={1.5}
+          fill={`url(#${id})`}
+          isAnimationActive={false}
+          dot={false}
+        />
+      </AreaChart>
+    </ResponsiveContainer>
+  );
+}
+
+function BarList({
+  items,
+  colorFn,
+  format,
+}: {
+  items: TopItem[];
+  colorFn?: (key: string) => string;
+  format?: (key: string) => string;
+}) {
+  const capped = items.slice(0, 6);
+  if (capped.length === 0) return <EmptyHint />;
+  const max = Math.max(1, ...capped.map((i) => i.count));
+  return (
+    <div className="flex h-full flex-col justify-center gap-1.5">
+      {capped.map((item, i) => {
+        const color = colorFn ? colorFn(item.key) : "var(--soc-low)";
+        return (
+          <div
+            key={`${item.key}-${i}`}
+            className="flex items-center gap-2 text-[11px]"
+          >
+            <span
+              className="w-24 shrink-0 truncate font-mono-data text-muted-foreground"
+              title={item.key}
+            >
+              {format ? format(item.key) : item.key}
+            </span>
+            <div className="relative h-2 flex-1 overflow-hidden rounded-sm bg-muted/30">
+              <div
+                className="absolute inset-y-0 left-0 rounded-sm"
+                style={{
+                  width: `${(item.count / max) * 100}%`,
+                  backgroundColor: color,
+                }}
+              />
+            </div>
+            <span className="w-8 shrink-0 text-right font-mono-data font-semibold">
+              {item.count}
+            </span>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+function RecentConnections({ items }: { items: SecurityEvent[] }) {
+  const capped = items.slice(0, 7);
+  if (capped.length === 0) return <EmptyHint />;
+  return (
+    <div className="flex h-full flex-col justify-center gap-1">
+      {capped.map((c) => (
+        <div key={c.id} className="flex items-center gap-2 text-[10px]">
+          <span className="w-12 shrink-0 font-mono-data text-muted-foreground">
+            {formatTime(c.timestamp)}
+          </span>
+          <span className="flex-1 truncate font-mono-data">
+            {c.sourceIp ?? "?"}
+            <span className="text-muted-foreground">:</span>
+            {c.sourcePort ?? "?"}
+            <span className="mx-1 text-muted-foreground">→</span>
+            {c.destIp ?? "?"}
+            <span className="text-muted-foreground">:</span>
+            {c.destPort ?? "?"}
+          </span>
+          <span
+            className="shrink-0 rounded px-1 py-0.5 font-mono-data text-[8px] uppercase"
+            style={protoBadgeStyle(c.protocol)}
+          >
+            {c.protocol?.toUpperCase() ?? "?"}
+          </span>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function MiniStat({
+  label,
+  value,
+  active,
+}: {
+  label: string;
+  value?: number;
+  active?: boolean;
+}) {
+  return (
+    <div className="flex items-center justify-between gap-2 rounded-md border border-border/40 bg-card/40 px-2.5 py-1.5">
+      <span className="font-mono-data text-[10px] uppercase tracking-wider text-muted-foreground">
+        {label}
+      </span>
+      <span className="flex items-center gap-1.5 font-mono-data text-sm font-bold">
+        {active && (
+          <span className="inline-block h-1.5 w-1.5 rounded-full bg-[color:var(--soc-success)] live-pulse" />
+        )}
+        {value != null ? value.toLocaleString() : "—"}
+      </span>
+    </div>
+  );
+}
+
+function ChartCard({ title, children }: { title: string; children: ReactNode }) {
+  return (
+    <div className="rounded-md border border-border/40 bg-card/30 p-2.5">
+      <div className="mb-2 font-mono-data text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
+        {title}
+      </div>
+      <div className="h-[130px]">{children}</div>
+    </div>
+  );
+}
+
+function InfoRow({
+  label,
+  value,
+  mono = true,
+  color,
+}: {
+  label: string;
+  value?: string | number | null;
+  mono?: boolean;
+  color?: string;
+}) {
+  return (
+    <>
+      <div className="font-mono-data text-[10px] uppercase tracking-wider text-muted-foreground">
+        {label}
+      </div>
+      <div
+        className={cn("truncate", mono && "font-mono-data")}
+        style={color ? { color } : undefined}
+        title={value != null ? String(value) : undefined}
+      >
+        {value != null && value !== "" ? value : "—"}
+      </div>
+    </>
+  );
+}
+
+// ============================================================
+// Target Control Bar
+// ============================================================
+
+function TargetControlBar() {
+  const sessionId = useAppStore((s) => s.sessionId);
+  const status = useAppStore((s) => s.status);
+  const targetAddress = useAppStore((s) => s.targetAddress);
+  const connected = useAppStore((s) => s.connected);
+  const mode = useAppStore((s) => s.mode);
+  const startSession = useAppStore((s) => s.startSession);
+  const stopSession = useAppStore((s) => s.stopSession);
+  const resetSession = useAppStore((s) => s.resetSession);
+  const setStatus = useAppStore((s) => s.setStatus);
+  const setKpi = useAppStore((s) => s.setKpi);
+  const setNetworkActivity = useAppStore((s) => s.setNetworkActivity);
+  const setOffenseScenarios = useAppStore((s) => s.setOffenseScenarios);
+  const setDefenseScenarios = useAppStore((s) => s.setDefenseScenarios);
+
+  const [targetInput, setTargetInput] = useState("192.168.1.100");
+  const [modeInput, setModeInput] = useState<"demo" | "live">("demo");
+  const [busy, setBusy] = useState(false);
+
+  const isActive = statusIsActive(status);
+
+  const handleStart = async () => {
+    const t = targetInput.trim();
+    if (!t) {
+      toast.error("Enter a target IP or domain.");
+      return;
+    }
+    setBusy(true);
+    setStatus("initializing");
+    try {
+      const res = await api.startMonitoring(t, modeInput);
+      const resolvedTarget = res.session.targetAddress || t;
+      startSession({
+        sessionId: res.sessionId,
+        targetAddress: resolvedTarget,
+        mode: res.session.mode,
+        assessment: res.assessment,
+      });
+      toast.success(`Monitoring started on ${resolvedTarget}`);
+      // Seed initial status snapshot (WS will stream updates afterwards)
+      try {
+        const st = await api.getStatus(res.sessionId);
+        if (st.kpi) setKpi(st.kpi);
+        if (st.networkActivity) setNetworkActivity(st.networkActivity);
+        if (st.offenseScenarios?.length) setOffenseScenarios(st.offenseScenarios);
+        if (st.defenseScenarios?.length) setDefenseScenarios(st.defenseScenarios);
+      } catch {
+        /* best-effort seeding; WS will provide live updates */
+      }
+    } catch (err) {
+      const e = err as Error & { status?: number; code?: string };
+      if (e.code === "INVALID_TARGET") {
+        toast.error("Target is unreachable.");
+      } else if (e.code === "START_FAILED") {
+        toast.error("Initial assessment failed.");
+      } else if (e.code === "UNREACHABLE" || !e.status) {
+        toast.error("Unable to connect to monitoring service.");
+      } else {
+        toast.error(e.message || "Unable to start monitoring.");
+      }
+      setStatus("ready");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const handleStop = async () => {
+    if (!sessionId) return;
+    setBusy(true);
+    try {
+      await api.stopMonitoring(sessionId);
+      stopSession();
+      toast.success("Monitoring session saved to history.");
+      window.setTimeout(() => resetSession(), 1000);
+    } catch (err) {
+      const e = err as Error & { status?: number; code?: string };
+      if (e.code === "UNREACHABLE" || !e.status) {
+        toast.error("Unable to connect to monitoring service.");
+      } else {
+        toast.error(e.message || "Failed to stop monitoring.");
+      }
+      stopSession();
+      window.setTimeout(() => resetSession(), 1000);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div className="flex shrink-0 flex-wrap items-center gap-2 border-b border-border/60 bg-card/40 px-3 py-2 backdrop-blur-md">
+      <div className="flex items-center gap-2">
+        <span className="font-mono-data text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
+          Target
+        </span>
+        <Input
+          value={targetInput}
+          onChange={(e) => setTargetInput(e.target.value)}
+          placeholder="IP or domain"
+          disabled={isActive || busy}
+          className="h-8 w-[200px] font-mono-data text-sm sm:w-[280px]"
+          onKeyDown={(e) => {
+            if (e.key === "Enter" && !isActive && !busy) handleStart();
+          }}
+          aria-label="Monitoring target IP or domain"
+        />
+      </div>
+
+      <Select
+        value={modeInput}
+        onValueChange={(v) => setModeInput(v as "demo" | "live")}
+        disabled={isActive || busy}
+      >
+        <SelectTrigger size="sm" className="h-8 w-full font-mono-data text-xs sm:w-[260px]">
+          <SelectValue />
+        </SelectTrigger>
+        <SelectContent>
+          <SelectItem value="demo">Demo Mode (Simulated Telemetry)</SelectItem>
+          <SelectItem value="live">Live Mode (Real Telemetry)</SelectItem>
+        </SelectContent>
+      </Select>
+
+      {!isActive ? (
+        <Button
+          onClick={handleStart}
+          disabled={busy}
+          size="sm"
+          className="h-8 gap-1.5"
+        >
+          <Activity className="h-3.5 w-3.5" />
+          {busy ? "STARTING…" : "START MONITORING"}
+        </Button>
+      ) : (
+        <Button
+          onClick={handleStop}
+          disabled={busy}
+          size="sm"
+          variant="destructive"
+          className="h-8 gap-1.5"
+        >
+          <Square className="h-3.5 w-3.5 fill-current" />
+          {busy ? "STOPPING…" : "STOP MONITORING"}
+        </Button>
+      )}
+
+      {isActive && (
+        <div className="flex flex-wrap items-center gap-3 pl-1">
+          <div className="flex items-center gap-1.5">
+            <span className="font-mono-data text-[10px] uppercase tracking-wider text-muted-foreground">
+              Active
+            </span>
+            <span className="font-mono-data text-xs font-semibold">
+              {targetAddress}
+            </span>
+          </div>
+          <StatusDot
+            status={status}
+            pulse={isActive}
+            label={status.toUpperCase()}
+            className="text-[10px]"
+          />
+          <StatusDot
+            status={connected ? "connected" : "disconnected"}
+            pulse={connected}
+            label={connected ? "LIVE" : "RECONNECTING"}
+            className="text-[10px]"
+          />
+          {mode === "demo" && (
+            <span className="rounded-sm border border-[color:var(--soc-medium)]/40 bg-[color:var(--soc-medium)]/10 px-1.5 py-0.5 font-mono-data text-[9px] font-bold uppercase tracking-wider text-[color:var(--soc-medium)]">
+              Demo
+            </span>
+          )}
+        </div>
+      )}
+
+      <div className="ml-auto hidden items-center md:flex">
+        <AuthWarning />
+      </div>
+    </div>
+  );
+}
+
+// ============================================================
+// Assessment Panel
+// ============================================================
+
+function AssessmentPanel() {
+  const assessment = useAppStore((s) => s.assessment);
+  const targetAddress = useAppStore((s) => s.targetAddress);
+  const [open, setOpen] = useState(true);
+
+  const servicesByPort = useMemo(() => {
+    const m = new Map<number, ServiceInfo>();
+    if (!assessment) return m;
+    for (const s of assessment.services) m.set(s.port, s);
+    return m;
+  }, [assessment]);
+
+  if (!assessment) return null;
+
+  const portCount = assessment.ports.length;
+  const portRowsHeight = portCount > 8 ? "max-h-[200px] overflow-y-auto soc-scrollbar" : "";
+
+  return (
+    <Collapsible open={open} onOpenChange={setOpen}>
+      <div className="overflow-hidden rounded-lg border border-border/60 bg-card/50 backdrop-blur-sm">
+        <CollapsibleTrigger className="flex w-full items-center justify-between gap-2 border-b border-border/50 bg-card/30 px-4 py-2.5 transition-colors hover:bg-accent/30">
+          <div className="flex min-w-0 items-center gap-2">
+            {open ? (
+              <ChevronDown className="h-4 w-4 shrink-0 text-muted-foreground" />
+            ) : (
+              <ChevronRight className="h-4 w-4 shrink-0 text-muted-foreground" />
+            )}
+            <span className="font-mono-data text-xs font-semibold uppercase tracking-wider">
+              Initial Assessment
+            </span>
+            <span className="truncate font-mono-data text-[10px] text-muted-foreground">
+              {assessment.reachability} · {portCount} open port{portCount === 1 ? "" : "s"}
+            </span>
+          </div>
+          {assessment.status && (
+            <span className="shrink-0 rounded-sm border border-[color:var(--soc-success)]/40 bg-[color:var(--soc-success)]/10 px-1.5 py-0.5 font-mono-data text-[9px] font-bold uppercase tracking-wider text-[color:var(--soc-success)]">
+              {assessment.status}
+            </span>
+          )}
+        </CollapsibleTrigger>
+        <CollapsibleContent>
+          <div className="grid grid-cols-1 lg:grid-cols-2 lg:divide-x lg:divide-border/40">
+            {/* Target Information */}
+            <div className="p-3">
+              <div className="mb-2.5 font-mono-data text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
+                Target Information
+              </div>
+              <div className="grid grid-cols-[110px_1fr] gap-x-3 gap-y-1.5 text-[11px]">
+                <InfoRow label="Target" value={targetAddress || assessment.targetId} />
+                <InfoRow label="Reachability" value={assessment.reachability} />
+                <InfoRow label="Hostname" value={assessment.hostname} />
+                <InfoRow label="OS Guess" value={assessment.osGuess} />
+                <InfoRow
+                  label="Latency"
+                  value={assessment.latencyMs != null ? `${assessment.latencyMs} ms` : null}
+                />
+                <InfoRow label="Assessment" value={assessment.status} color="var(--soc-success)" />
+                <InfoRow label="Open Ports" value={portCount} color="var(--soc-low)" />
+              </div>
+            </div>
+
+            {/* Open Ports & Services */}
+            <div className="p-3">
+              <div className="mb-2.5 font-mono-data text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
+                Open Ports & Services
+              </div>
+              {portCount === 0 ? (
+                <EmptyHint text="No open ports detected" />
+              ) : (
+                <div className={portRowsHeight}>
+                  <table className="w-full text-[11px]">
+                    <thead className="sticky top-0 bg-card/90 backdrop-blur-sm">
+                      <tr className="border-b border-border/40 text-left font-mono-data text-[9px] uppercase tracking-wider text-muted-foreground">
+                        <th className="px-2 py-1 font-medium">Port</th>
+                        <th className="px-2 py-1 font-medium">Proto</th>
+                        <th className="px-2 py-1 font-medium">State</th>
+                        <th className="px-2 py-1 font-medium">Service</th>
+                        <th className="px-2 py-1 font-medium">Product</th>
+                        <th className="px-2 py-1 font-medium">Version</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {assessment.ports.map((p) => {
+                        const svc = servicesByPort.get(p.number);
+                        return (
+                          <tr
+                            key={p.id}
+                            className="border-b border-border/20 hover:bg-accent/20 transition-colors"
+                          >
+                            <td
+                              className="px-2 py-1 font-mono-data font-bold"
+                              style={{ color: portAccentColor(p.number) }}
+                            >
+                              {p.number}
+                            </td>
+                            <td className="px-2 py-1 font-mono-data uppercase text-[10px]">
+                              {p.protocol}
+                            </td>
+                            <td className="px-2 py-1 font-mono-data text-[10px]">{p.state}</td>
+                            <td className="px-2 py-1 truncate" title={svc?.name ?? p.serviceName ?? ""}>
+                              {svc?.name ?? p.serviceName ?? "—"}
+                            </td>
+                            <td className="px-2 py-1 font-mono-data text-[10px] truncate" title={svc?.product ?? ""}>
+                              {svc?.product ?? "—"}
+                            </td>
+                            <td className="px-2 py-1 font-mono-data text-[10px] truncate" title={svc?.version ?? ""}>
+                              {svc?.version ?? "—"}
+                            </td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+            </div>
+          </div>
+        </CollapsibleContent>
+      </div>
+    </Collapsible>
+  );
+}
+
+// ============================================================
+// KPI Grid
+// ============================================================
+
+interface KpiCardDef {
+  label: string;
+  value: string;
+  icon: LucideIcon;
+  accent: "default" | "critical" | "high" | "medium" | "low" | "info" | "success";
+  live: boolean;
+}
+
+function KpiGrid() {
+  const kpi = useAppStore((s) => s.kpi);
+  const status = useAppStore((s) => s.status);
+  const isActive = statusIsActive(status);
+
+  const cards: KpiCardDef[] = [
+    { label: "Events", value: fmt(kpi?.events), icon: Activity, accent: "default", live: isActive },
+    { label: "Critical", value: fmt(kpi?.critical), icon: AlertOctagon, accent: "critical", live: false },
+    { label: "High", value: fmt(kpi?.high), icon: AlertTriangle, accent: "high", live: false },
+    { label: "Medium", value: fmt(kpi?.medium), icon: AlertCircle, accent: "medium", live: false },
+    { label: "Low", value: fmt(kpi?.low), icon: ShieldAlert, accent: "low", live: false },
+    { label: "Active Conns", value: fmt(kpi?.activeConnections), icon: NetworkIcon, accent: "default", live: isActive },
+    { label: "Events/Sec", value: fmt(kpi?.eventsPerSec), icon: Zap, accent: "default", live: isActive },
+    { label: "Traffic KB/s", value: fmt(kpi?.trafficRate), icon: Gauge, accent: "default", live: isActive },
+    { label: "Open Ports", value: fmt(kpi?.openPorts), icon: Server, accent: "default", live: false },
+  ];
+
+  return (
+    <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-5 xl:grid-cols-9">
+      {cards.map((c) => (
+        <KpiCard
+          key={c.label}
+          label={c.label}
+          value={c.value}
+          icon={c.icon}
+          accent={c.accent}
+          live={c.live}
+        />
+      ))}
+    </div>
+  );
+}
+
+// ============================================================
+// Live Security Log
+// ============================================================
+
+function LiveSecurityLog() {
+  const events = useAppStore((s) => s.events);
+  const paused = useAppStore((s) => s.paused);
+  const setPaused = useAppStore((s) => s.setPaused);
+  const clearLiveView = useAppStore((s) => s.clearLiveView);
+
+  const [sevFilter, setSevFilter] = useState<Severity | "all">("all");
+  const [typeFilter, setTypeFilter] = useState<string>("all");
+  const [search, setSearch] = useState("");
+
+  const filtered = useMemo(() => {
+    const q = search.trim().toLowerCase();
+    return events
+      .filter((e) => {
+        if (sevFilter !== "all" && e.severity !== sevFilter) return false;
+        if (typeFilter !== "all" && e.eventType !== typeFilter) return false;
+        if (q) {
+          const hay = `${e.sourceIp ?? ""} ${e.destIp ?? ""} ${e.message}`.toLowerCase();
+          if (!hay.includes(q)) return false;
+        }
+        return true;
+      })
+      .slice(0, 200);
+  }, [events, sevFilter, typeFilter, search]);
+
+  return (
+    <Panel
+      title="Live Security Log"
+      icon={<Activity className="h-4 w-4" />}
+      className="h-full"
+      bodyClassName="flex min-h-0 flex-col"
+      actions={
+        <>
+          <Button
+            size="sm"
+            variant="outline"
+            className="h-7 gap-1 px-2 text-[11px]"
+            onClick={() => setPaused(!paused)}
+            aria-label={paused ? "Resume stream" : "Pause stream"}
+          >
+            {paused ? <Play className="h-3 w-3" /> : <Pause className="h-3 w-3" />}
+            {paused ? "Resume" : "Pause"}
+          </Button>
+          <Button
+            size="sm"
+            variant="outline"
+            className="h-7 gap-1 px-2 text-[11px]"
+            onClick={() => {
+              clearLiveView();
+              toast.success("Live view cleared. History preserved.");
+            }}
+            aria-label="Clear live view"
+          >
+            <Trash2 className="h-3 w-3" />
+            Clear
+          </Button>
+        </>
+      }
+    >
+      {/* Filters row */}
+      <div className="flex flex-wrap items-center gap-2 border-b border-border/40 px-3 py-2">
+        <div className="flex flex-wrap items-center gap-1">
+          {SEV_FILTERS.map((f) => {
+            const active = sevFilter === f.key;
+            const sc = f.key !== "all" ? severityColor(f.key) : undefined;
+            return (
+              <button
+                key={f.key}
+                type="button"
+                onClick={() => setSevFilter(f.key)}
+                className={cn(
+                  "rounded-sm border px-1.5 py-0.5 font-mono-data text-[10px] uppercase tracking-wider transition-colors",
+                  active
+                    ? "text-foreground"
+                    : "border-transparent text-muted-foreground hover:text-foreground",
+                )}
+                style={
+                  active && sc
+                    ? {
+                        color: sc,
+                        borderColor: `color-mix(in oklch, ${sc} 40%, transparent)`,
+                        backgroundColor: `color-mix(in oklch, ${sc} 12%, transparent)`,
+                      }
+                    : active
+                      ? { borderColor: "var(--border)", backgroundColor: "var(--accent)" }
+                      : undefined
+                }
+              >
+                {f.label}
+              </button>
+            );
+          })}
+        </div>
+
+        <Select value={typeFilter} onValueChange={setTypeFilter}>
+          <SelectTrigger size="sm" className="h-7 w-[150px] text-[11px]">
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            {EVENT_TYPES.map((t) => (
+              <SelectItem key={t} value={t}>
+                {t === "all" ? "All Types" : t}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+
+        <div className="relative min-w-[140px] flex-1">
+          <Search className="absolute left-2 top-1/2 h-3 w-3 -translate-y-1/2 text-muted-foreground" />
+          <Input
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+            placeholder="Search source / dest / message…"
+            className="h-7 pl-7 text-[11px]"
+            aria-label="Search events"
+          />
+        </div>
+      </div>
+
+      {/* Table */}
+      <div className="soc-scrollbar max-h-[420px] min-h-0 flex-1 overflow-y-auto">
+        {filtered.length === 0 ? (
+          <div className="flex min-h-[200px] flex-col items-center justify-center gap-2 py-8 text-muted-foreground">
+            <span className="relative inline-flex h-2 w-2">
+              <span className="absolute inline-block h-full w-full rounded-full bg-[color:var(--soc-low)] live-pulse" />
+            </span>
+            <span className="font-mono-data text-xs uppercase tracking-wider">
+              Waiting for telemetry…
+            </span>
+          </div>
+        ) : (
+          <table className="w-full text-[11px]">
+            <thead className="sticky top-0 z-10 bg-card/90 backdrop-blur-sm">
+              <tr className="border-b border-border/50 text-left font-mono-data text-[9px] uppercase tracking-wider text-muted-foreground">
+                <th className="px-2 py-1.5 font-medium">Time</th>
+                <th className="px-2 py-1.5 font-medium">Source</th>
+                <th className="px-2 py-1.5 font-medium">Destination</th>
+                <th className="px-2 py-1.5 font-medium">Proto</th>
+                <th className="px-2 py-1.5 font-medium">Event</th>
+                <th className="px-2 py-1.5 font-medium">Severity</th>
+                <th className="px-2 py-1.5 font-medium">Status</th>
+              </tr>
+            </thead>
+            <tbody>
+              {filtered.map((e) => {
+                const src = e.sourceIp
+                  ? `${e.sourceIp}${e.sourcePort ? `:${e.sourcePort}` : ""}`
+                  : "—";
+                const dst = e.destIp
+                  ? `${e.destIp}${e.destPort ? `:${e.destPort}` : ""}`
+                  : e.destPort
+                    ? `:${e.destPort}`
+                    : "—";
+                return (
+                  <tr
+                    key={e.id}
+                    className="border-b border-border/20 transition-colors hover:bg-accent/30"
+                  >
+                    <td className="whitespace-nowrap px-2 py-1.5 font-mono-data text-muted-foreground">
+                      {formatTime(e.timestamp)}
+                    </td>
+                    <td className="whitespace-nowrap px-2 py-1.5 font-mono-data">{src}</td>
+                    <td className="whitespace-nowrap px-2 py-1.5 font-mono-data">{dst}</td>
+                    <td className="whitespace-nowrap px-2 py-1.5">
+                      <span
+                        className="rounded px-1 py-0.5 font-mono-data text-[9px] uppercase"
+                        style={protoBadgeStyle(e.protocol)}
+                      >
+                        {e.protocol?.toUpperCase() ?? "?"}
+                      </span>
+                    </td>
+                    <td className="max-w-[280px] px-2 py-1.5">
+                      <div className="flex items-center gap-1.5">
+                        {e.isDemo && (
+                          <span className="shrink-0 rounded-sm border border-[color:var(--soc-medium)]/40 bg-[color:var(--soc-medium)]/10 px-1 py-0.5 font-mono-data text-[8px] font-bold uppercase text-[color:var(--soc-medium)]">
+                            Demo
+                          </span>
+                        )}
+                        <span
+                          className="truncate"
+                          title={`${e.eventType} — ${e.message}`}
+                        >
+                          <span className="font-mono-data text-[10px] font-semibold text-foreground">
+                            {e.eventType}
+                          </span>
+                          <span className="text-muted-foreground"> {e.message}</span>
+                        </span>
+                      </div>
+                    </td>
+                    <td className="whitespace-nowrap px-2 py-1.5">
+                      <SeverityBadge severity={e.severity} size="sm" />
+                    </td>
+                    <td className="whitespace-nowrap px-2 py-1.5">
+                      <span className="inline-flex items-center gap-1 font-mono-data text-[10px] text-muted-foreground">
+                        <span
+                          className="inline-block h-1.5 w-1.5 rounded-full"
+                          style={{
+                            backgroundColor:
+                              e.status === "blocked"
+                                ? "var(--soc-critical)"
+                                : e.status === "allowed"
+                                  ? "var(--soc-success)"
+                                  : "var(--muted-foreground)",
+                          }}
+                        />
+                        {e.status}
+                      </span>
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        )}
+      </div>
+    </Panel>
+  );
+}
+
+// ============================================================
+// Network Activity Panel
+// ============================================================
+
+function NetworkActivityPanel() {
+  const na = useAppStore((s) => s.networkActivity);
+  const status = useAppStore((s) => s.status);
+  const isActive = statusIsActive(status);
+
+  const protoItems: TopItem[] = useMemo(() => {
+    if (!na) return [];
+    return na.protocolDistribution.map((p: ProtocolDistribution) => ({
+      key: p.protocol,
+      count: p.count,
+    }));
+  }, [na]);
+
+  return (
+    <Panel
+      title="Live Network Activity"
+      icon={<NetworkIcon className="h-4 w-4" />}
+      bodyClassName="flex flex-col"
+    >
+      {/* Mini KPIs */}
+      <div className="grid grid-cols-2 gap-2 border-b border-border/40 px-3 py-2 sm:grid-cols-4">
+        <MiniStat label="Connections" value={na?.connectionCount} active={isActive} />
+        <MiniStat label="Conn/Sec" value={na?.connectionsPerSec} active={isActive} />
+        <MiniStat label="Request Rate" value={na?.requestRate} active={isActive} />
+        <MiniStat label="Traffic KB/s" value={na?.trafficRate} active={isActive} />
+      </div>
+
+      {/* Charts grid */}
+      <div className="grid grid-cols-1 gap-3 p-3 md:grid-cols-2">
+        <ChartCard title="Events / Sec">
+          {na ? (
+            <MiniAreaChart
+              data={na.eventsPerSecTimeline}
+              color="var(--soc-low)"
+              id="events-area"
+            />
+          ) : (
+            <Skeleton className="h-full w-full" />
+          )}
+        </ChartCard>
+
+        <ChartCard title="Traffic Rate (KB/s)">
+          {na ? (
+            <MiniAreaChart
+              data={na.trafficTimeline}
+              color="var(--soc-info)"
+              id="traffic-area"
+            />
+          ) : (
+            <Skeleton className="h-full w-full" />
+          )}
+        </ChartCard>
+
+        <ChartCard title="Protocol Distribution">
+          {na ? (
+            <BarList items={protoItems} colorFn={protoColor} />
+          ) : (
+            <Skeleton className="h-full w-full" />
+          )}
+        </ChartCard>
+
+        <ChartCard title="Top Source IPs">
+          {na ? (
+            <BarList items={na.topSourceIps} />
+          ) : (
+            <Skeleton className="h-full w-full" />
+          )}
+        </ChartCard>
+
+        <ChartCard title="Top Destination Ports">
+          {na ? (
+            <BarList items={na.topDestPorts} format={(k) => `:${k}`} />
+          ) : (
+            <Skeleton className="h-full w-full" />
+          )}
+        </ChartCard>
+
+        <ChartCard title="Recent Connections">
+          {na ? (
+            <RecentConnections items={na.recentConnections} />
+          ) : (
+            <Skeleton className="h-full w-full" />
+          )}
+        </ChartCard>
+      </div>
+    </Panel>
+  );
+}
+
+// ============================================================
+// Live Alerts
+// ============================================================
+
+function LiveAlerts() {
+  const alerts = useAppStore((s) => s.alerts);
+
+  const capped = useMemo(() => alerts.slice(0, 100), [alerts]);
+
+  const counts = useMemo(() => {
+    const c: Record<Severity, number> = {
+      critical: 0,
+      high: 0,
+      medium: 0,
+      low: 0,
+      info: 0,
+    };
+    for (const a of alerts) c[a.severity]++;
+    return c;
+  }, [alerts]);
+
+  return (
+    <Panel
+      title="Live Alerts"
+      icon={<AlertTriangle className="h-4 w-4" />}
+      className="h-full"
+      bodyClassName="flex min-h-0 flex-col"
+      actions={
+        <div className="flex items-center gap-1.5">
+          {(["critical", "high", "medium", "low"] as Severity[]).map((s) => (
+            <span
+              key={s}
+              className="rounded-sm border px-1.5 py-0.5 font-mono-data text-[10px] font-bold uppercase"
+              style={{
+                color: severityColor(s),
+                borderColor: `color-mix(in oklch, ${severityColor(s)} 40%, transparent)`,
+                backgroundColor: `color-mix(in oklch, ${severityColor(s)} 12%, transparent)`,
+              }}
+              title={`${s} alerts`}
+            >
+              {counts[s]}
+            </span>
+          ))}
+        </div>
+      }
+    >
+      <div className="soc-scrollbar max-h-[300px] min-h-0 flex-1 overflow-y-auto p-2">
+        {capped.length === 0 ? (
+          <div className="flex min-h-[160px] flex-col items-center justify-center gap-2 py-6 text-muted-foreground">
+            <Shield className="h-6 w-6 opacity-40" />
+            <span className="max-w-[220px] text-center font-mono-data text-[10px] uppercase tracking-wider">
+              No alerts. Detection rules are monitoring telemetry…
+            </span>
+          </div>
+        ) : (
+          <div className="flex flex-col gap-2">
+            {capped.map((a) => (
+              <div
+                key={a.id}
+                className="relative overflow-hidden rounded-md border border-border/40 bg-card/40 p-2.5 pl-3 transition-colors hover:bg-accent/30"
+              >
+                <div
+                  className="absolute left-0 top-0 h-full w-0.5"
+                  style={{ backgroundColor: severityColor(a.severity) }}
+                />
+                <div className="flex items-center gap-2">
+                  <SeverityBadge severity={a.severity} size="sm" />
+                  <span className="flex-1 truncate font-mono-data text-xs font-bold" title={a.ruleName}>
+                    {a.ruleName}
+                  </span>
+                  <span className="shrink-0 font-mono-data text-[9px] text-muted-foreground">
+                    {a.alertId}
+                  </span>
+                </div>
+                <div className="mt-1 text-[11px] leading-snug text-foreground/80">
+                  {a.message}
+                </div>
+                <div className="mt-1.5 flex items-center gap-3 text-[10px] text-muted-foreground">
+                  <span className="font-mono-data">CONF {a.confidence}%</span>
+                  {a.recommendedAction && (
+                    <span className="truncate" title={a.recommendedAction}>
+                      → {a.recommendedAction}
+                    </span>
+                  )}
+                  <span className="ml-auto whitespace-nowrap font-mono-data">
+                    {formatTime(a.timestamp)}
+                  </span>
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+    </Panel>
+  );
+}
+
+// ============================================================
+// Main View
+// ============================================================
+
+export function LiveMonitorView() {
+  return (
+    <div className="flex h-full flex-col overflow-hidden">
+      <TargetControlBar />
+      <div className="soc-scrollbar flex-1 overflow-y-auto overflow-x-hidden p-3">
+        <div className="flex flex-col gap-3">
+          <AssessmentPanel />
+          <KpiGrid />
+          <div className="grid grid-cols-1 gap-3 lg:grid-cols-12">
+            <div className="min-h-0 lg:col-span-8">
+              <LiveSecurityLog />
+            </div>
+            <div className="min-h-0 lg:col-span-4">
+              <LiveAlerts />
+            </div>
+          </div>
+          <NetworkActivityPanel />
+        </div>
+      </div>
+    </div>
+  );
+}

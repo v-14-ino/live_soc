@@ -1,0 +1,260 @@
+// LiveSOC - Live Security Monitoring & Detection Platform
+// Prisma schema (SQLite adapter for the platform)
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+// ============================================================
+// Targets
+// ============================================================
+model Target {
+  id          String   @id @default(cuid())
+  address     String   @unique // IP or domain
+  hostname    String?
+  targetType  String   @default("unknown") // ip | domain | localhost
+  isLab       Boolean  @default(true)
+  authorized  Boolean  @default(true)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  assessments Assessment[]
+  sessions    MonitoringSession[]
+}
+
+// ============================================================
+// Assessments (initial discovery / baseline)
+// ============================================================
+model Assessment {
+  id            String   @id @default(cuid())
+  targetId      String
+  target        Target   @relation(fields: [targetId], references: [id], onDelete: Cascade)
+  status        String   @default("pending") // pending | running | completed | failed
+  reachability  String   @default("unknown") // reachable | unreachable | unknown
+  latencyMs     Int?
+  hostname      String?
+  osGuess       String?
+  startedAt     DateTime @default(now())
+  completedAt   DateTime?
+  createdAt     DateTime @default(now())
+
+  ports    Port[]
+  services Service[]
+  sessions MonitoringSession[]
+  events   Event[]
+
+  @@index([targetId])
+}
+
+model Port {
+  id          String   @id @default(cuid())
+  assessmentId String
+  assessment   Assessment @relation(fields: [assessmentId], references: [id], onDelete: Cascade)
+  number      Int
+  protocol    String   @default("tcp") // tcp | udp
+  state       String   @default("open") // open | closed | filtered
+  serviceId   String?
+  service     Service?  @relation(fields: [serviceId], references: [id], onDelete: SetNull)
+  createdAt   DateTime @default(now())
+
+  @@index([assessmentId])
+  @@unique([assessmentId, number, protocol])
+}
+
+model Service {
+  id           String   @id @default(cuid())
+  assessmentId String
+  assessment   Assessment @relation(fields: [assessmentId], references: [id], onDelete: Cascade)
+  name         String
+  port         Int
+  protocol     String   @default("tcp")
+  product      String?
+  version      String?
+  extrainfo    String?
+  method       String   @default("table") // table | probe
+  confidence   Int      @default(50)
+  createdAt    DateTime @default(now())
+
+  ports Port[]
+
+  @@index([assessmentId])
+}
+
+// ============================================================
+// Monitoring Sessions
+// ============================================================
+model MonitoringSession {
+  id            String    @id @default(cuid())
+  targetId      String
+  target        Target    @relation(fields: [targetId], references: [id], onDelete: Cascade)
+  assessmentId  String?
+  assessment    Assessment? @relation(fields: [assessmentId], references: [id], onDelete: SetNull)
+  status        String    @default("ready") // ready | initializing | scanning | monitoring | reconnecting | stopped | completed | error
+  mode          String    @default("demo") // demo | live
+  startedAt     DateTime  @default(now())
+  endedAt       DateTime?
+  durationSec   Int       @default(0)
+  eventCount    Int       @default(0)
+  alertCount    Int       @default(0)
+  riskSummary   String?
+  createdAt     DateTime  @default(now())
+
+  events   Event[]
+  alerts   Alert[]
+  scenariosOffense ScenarioOffense[]
+  scenariosDefense ScenarioDefense[]
+
+  @@index([targetId])
+}
+
+// ============================================================
+// Events & Alerts
+// ============================================================
+model Event {
+  id            String   @id @default(cuid())
+  eventId       String   @unique // EVT-NNNN
+  sessionId     String?
+  session       MonitoringSession? @relation(fields: [sessionId], references: [id], onDelete: SetNull)
+  assessmentId  String?
+  assessment    Assessment? @relation(fields: [assessmentId], references: [id], onDelete: SetNull)
+  timestamp     DateTime @default(now())
+  source        String   @default("unknown") // telemetry source
+  sourceIp      String?
+  sourcePort    Int?
+  destIp        String?
+  destPort      Int?
+  protocol      String?
+  eventType     String   // connection | auth_failure | http_request | scan | anomaly | ...
+  severity      String   @default("low") // critical | high | medium | low | info
+  status        String   @default("new") // new | acknowledged | resolved
+  message       String
+  isDemo        Boolean  @default(false)
+  rawJson       String?  // JSON blob of extra fields
+  createdAt     DateTime @default(now())
+
+  alerts   Alert[]
+
+  @@index([sessionId])
+  @@index([severity])
+  @@index([eventType])
+}
+
+model Alert {
+  id           String   @id @default(cuid())
+  alertId      String   @unique // ALR-NNNN
+  sessionId    String?
+  session      MonitoringSession? @relation(fields: [sessionId], references: [id], onDelete: SetNull)
+  eventId      String?
+  event        Event?   @relation(fields: [eventId], references: [id], onDelete: SetNull)
+  ruleId       String
+  ruleName     String
+  severity     String   @default("medium")
+  confidence   Int      @default(50)
+  message      String
+  recommendedAction String?
+  status       String   @default("active") // active | acknowledged | resolved
+  timestamp    DateTime @default(now())
+  createdAt    DateTime @default(now())
+
+  @@index([sessionId])
+  @@index([severity])
+}
+
+// ============================================================
+// Scenarios (Offense / Defense)
+// ============================================================
+model ScenarioOffense {
+  id             String   @id @default(cuid())
+  scenarioId     String   @unique // SCN-O-NNNN
+  sessionId      String?
+  session        MonitoringSession? @relation(fields: [sessionId], references: [id], onDelete: SetNull)
+  title          String
+  category       String   // e.g. network_service_discovery
+  severity       String   @default("medium")
+  confidence     Int      @default(50)
+  affectedTarget String?
+  affectedService String?
+  technique      String?
+  techniqueMitre String?
+  attackPath     String?  // multi-line text
+  potentialImpact String?
+  relatedEventIds String? // comma separated EVT ids
+  eventCount     Int      @default(0)
+  sourceCount    Int      @default(0)
+  status         String   @default("active") // active | inactive | resolved
+  firstObserved  DateTime @default(now())
+  lastObserved   DateTime @default(now())
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  @@index([sessionId])
+  @@index([severity])
+}
+
+model ScenarioDefense {
+  id             String   @id @default(cuid())
+  scenarioId     String   @unique // SCN-D-NNNN
+  sessionId      String?
+  session        MonitoringSession? @relation(fields: [sessionId], references: [id], onDelete: SetNull)
+  relatedOffenseId String? // SCN-O-XXXX
+  title          String
+  category       String
+  priority       String   @default("medium") // critical | high | medium | low
+  affectedService String?
+  detect         String?
+  monitor        String?
+  prevent        String?
+  respond        String?
+  recommendedAction String?
+  relatedEventIds String?
+  status         String   @default("active") // active | inactive | resolved
+  firstObserved  DateTime @default(now())
+  lastObserved   DateTime @default(now())
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  @@index([sessionId])
+  @@index([priority])
+}
+
+// ============================================================
+// Reports
+// ============================================================
+model Report {
+  id           String   @id @default(cuid())
+  reportId     String   @unique // RPT-NNNN
+  sessionId    String?
+  target       String
+  title        String
+  generatedAt  DateTime @default(now())
+  riskLevel    String   @default("low")
+  eventCount   Int      @default(0)
+  alertCount   Int      @default(0)
+  scenarioCount Int     @default(0)
+  pdfUrl       String?
+  jsonSummary  String?  // JSON blob
+  createdAt    DateTime @default(now())
+}
+
+// ============================================================
+// Settings & Audit Log
+// ============================================================
+model AppSetting {
+  id    String @id @default(cuid())
+  key   String @unique
+  value String
+}
+
+model AuditLog {
+  id        String   @id @default(cuid())
+  timestamp DateTime @default(now())
+  level     String   @default("info") // debug | info | warning | error | critical
+  module    String   @default("system")
+  message   String
+  meta      String?  // JSON
+}
