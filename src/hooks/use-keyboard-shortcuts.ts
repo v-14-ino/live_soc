@@ -68,15 +68,18 @@ export function useKeyboardShortcuts(options: KeyboardShortcutsOptions) {
   const handler = useCallback(
     (e: KeyboardEvent) => {
       // Don't interfere with text inputs, textareas, contenteditable
-      const target = e.target as HTMLElement | null;
-      const tag = target?.tagName?.toLowerCase();
+      // Use a proper instanceof guard — EventTarget is not guaranteed
+      // to be an Element (could be Document, Window, SVGElement, etc.)
+      const target = e.target;
+      const element = target instanceof Element ? target : null;
+      const tag = element?.tagName?.toLowerCase();
       const isInput =
         tag === "input" ||
         tag === "textarea" ||
         tag === "select" ||
-        target?.isContentEditable ||
-        target?.getAttribute("role") === "combobox" ||
-        target?.getAttribute("role") === "textbox";
+        (element?.isContentEditable ?? false) ||
+        element?.getAttribute("role") === "combobox" ||
+        element?.getAttribute("role") === "textbox";
 
       // Cmd/Ctrl+K is always handled (in CommandPalette), skip here
       if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "k") return;

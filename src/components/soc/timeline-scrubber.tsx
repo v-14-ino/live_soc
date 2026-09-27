@@ -119,7 +119,10 @@ export function TimelineScrubber({ events, onScrub, className }: TimelineScrubbe
     draggingRef.current = true;
     setPlaying(false);
     handlePointer(e.clientX);
-    (e.target as HTMLElement).setPointerCapture?.(e.pointerId);
+    // Safe guard: setPointerCapture only exists on Element
+    if (e.target instanceof Element) {
+      (e.target as HTMLElement).setPointerCapture?.(e.pointerId);
+    }
   }, [handlePointer]);
 
   const handlePointerMove = useCallback((e: React.PointerEvent) => {
