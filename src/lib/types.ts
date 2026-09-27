@@ -410,4 +410,8 @@ export interface AppSettings {
   scanTimeoutSec: number;
   scanTopPorts: number;
   authorizedScopeNote: string;
+  // Phase C: configurable heartbeat thresholds
+  agentHeartbeatIntervalSec: number;
+  agentDegradedAfterSec: number;
+  agentOfflineAfterSec: number;
 }

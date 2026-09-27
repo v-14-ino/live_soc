@@ -409,4 +409,8 @@ export const DEFAULT_SETTINGS = {
   scanTimeoutSec: 30,
   scanTopPorts: 100,
   authorizedScopeNote: AUTHORIZED_SCOPE_NOTICE,
+  // Phase C: configurable heartbeat thresholds
+  agentHeartbeatIntervalSec: 30,
+  agentDegradedAfterSec: 60,
+  agentOfflineAfterSec: 120,
 };

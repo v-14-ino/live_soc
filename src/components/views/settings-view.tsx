@@ -14,6 +14,7 @@ import {
   CheckCircle2,
   Database,
   Cpu,
+  MonitorSmartphone,
   type LucideIcon,
 } from "lucide-react";
 import { useAppStore } from "@/lib/store";
@@ -21,6 +22,7 @@ import { api } from "@/lib/api-client";
 import { AuthWarning } from "@/components/soc/auth-warning";
 import { TelemetryAdaptersPanel } from "@/components/soc/telemetry-adapters-panel";
 import { WebhooksPanel } from "@/components/soc/webhooks-panel";
+import { AgentManagementPanel } from "@/components/soc/agent-management-panel";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -438,6 +440,66 @@ export function SettingsView() {
                 className="h-8 w-full max-w-[160px] font-mono-data text-[11px]"
               />
             </FieldRow>
+            <FieldRow
+              label="Agent Heartbeat Interval (s)"
+              htmlFor="agentHeartbeatInterval"
+              description="How often agents should send heartbeats (10–300 s)."
+            >
+              <Input
+                id="agentHeartbeatInterval"
+                type="number"
+                min={10}
+                max={300}
+                step={5}
+                value={local.agentHeartbeatIntervalSec}
+                onChange={(e) => {
+                  const v = Number(e.target.value);
+                  if (!Number.isFinite(v)) return;
+                  update("agentHeartbeatIntervalSec", Math.max(10, Math.min(300, Math.floor(v))));
+                }}
+                className="h-8 w-full max-w-[160px] font-mono-data text-[11px]"
+              />
+            </FieldRow>
+            <FieldRow
+              label="Agent Degraded After (s)"
+              htmlFor="agentDegradedAfter"
+              description="Seconds without heartbeat before an agent is marked DEGRADED (30–600 s)."
+            >
+              <Input
+                id="agentDegradedAfter"
+                type="number"
+                min={30}
+                max={600}
+                step={10}
+                value={local.agentDegradedAfterSec}
+                onChange={(e) => {
+                  const v = Number(e.target.value);
+                  if (!Number.isFinite(v)) return;
+                  update("agentDegradedAfterSec", Math.max(30, Math.min(600, Math.floor(v))));
+                }}
+                className="h-8 w-full max-w-[160px] font-mono-data text-[11px]"
+              />
+            </FieldRow>
+            <FieldRow
+              label="Agent Offline After (s)"
+              htmlFor="agentOfflineAfter"
+              description="Seconds without heartbeat before an agent is marked OFFLINE + alert generated (60–3600 s)."
+            >
+              <Input
+                id="agentOfflineAfter"
+                type="number"
+                min={60}
+                max={3600}
+                step={30}
+                value={local.agentOfflineAfterSec}
+                onChange={(e) => {
+                  const v = Number(e.target.value);
+                  if (!Number.isFinite(v)) return;
+                  update("agentOfflineAfterSec", Math.max(60, Math.min(3600, Math.floor(v))));
+                }}
+                className="h-8 w-full max-w-[160px] font-mono-data text-[11px]"
+              />
+            </FieldRow>
           </SectionCard>
 
           {/* TELEMETRY COLLECTORS */}
@@ -520,6 +582,15 @@ export function SettingsView() {
             icon={Webhook}
           >
             <WebhooksPanel />
+          </SectionCard>
+
+          {/* AGENTS (Phase B) */}
+          <SectionCard
+            title="Agents"
+            description="Register and manage telemetry agents (Linux/Windows)."
+            icon={MonitorSmartphone}
+          >
+            <AgentManagementPanel />
           </SectionCard>
 
           {/* DATA MANAGEMENT */}

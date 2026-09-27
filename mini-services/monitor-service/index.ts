@@ -695,13 +695,33 @@ const heartbeatInterval = setInterval(() => {
 // ============================================================
 
 const AGENT_HEALTH_CHECK_MS = 30_000;
-const AGENT_DEGRADED_SEC = 60;
-const AGENT_OFFLINE_SEC = 120;
+// Phase C: thresholds are now configurable via AppSetting table.
+// These are the defaults; the interval reads the current values from DB.
+const DEFAULT_AGENT_DEGRADED_SEC = 60;
+const DEFAULT_AGENT_OFFLINE_SEC = 120;
+
+async function getAgentThresholds(): Promise<{ degradedSec: number; offlineSec: number }> {
+  try {
+    const settings = await db.appSetting.findMany({
+      where: { key: { in: ["agentDegradedAfterSec", "agentOfflineAfterSec"] } },
+    });
+    const map = new Map(settings.map((s) => [s.key, s.value]));
+    const degradedSec = parseInt(map.get("agentDegradedAfterSec") ?? "", 10);
+    const offlineSec = parseInt(map.get("agentOfflineAfterSec") ?? "", 10);
+    return {
+      degradedSec: Number.isFinite(degradedSec) && degradedSec > 0 ? degradedSec : DEFAULT_AGENT_DEGRADED_SEC,
+      offlineSec: Number.isFinite(offlineSec) && offlineSec > 0 ? offlineSec : DEFAULT_AGENT_OFFLINE_SEC,
+    };
+  } catch {
+    return { degradedSec: DEFAULT_AGENT_DEGRADED_SEC, offlineSec: DEFAULT_AGENT_OFFLINE_SEC };
+  }
+}
 
 const agentHealthInterval = setInterval(async () => {
   try {
     const agents = await db.agent.findMany();
     const now = Date.now();
+    const { degradedSec, offlineSec } = await getAgentThresholds();
 
     for (const agent of agents) {
       if (!agent.lastHeartbeat) continue;
@@ -710,9 +730,9 @@ const agentHealthInterval = setInterval(async () => {
       const elapsedSec = Math.floor((now - lastMs) / 1000);
 
       let newStatus = agent.status;
-      if (elapsedSec >= AGENT_OFFLINE_SEC) {
+      if (elapsedSec >= offlineSec) {
         newStatus = "OFFLINE";
-      } else if (elapsedSec >= AGENT_DEGRADED_SEC) {
+      } else if (elapsedSec >= degradedSec) {
         newStatus = "DEGRADED";
       } else {
         newStatus = "ONLINE";

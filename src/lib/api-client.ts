@@ -220,6 +220,34 @@ export const api = {
       total: number;
     }>("/api/agents/register"),
 
+  updateAgent: (agentId: string, patch: { enabled?: boolean; name?: string }) =>
+    http<{
+      agent: {
+        id: string;
+        agentId: string;
+        name: string;
+        hostname: string | null;
+        os: string | null;
+        version: string | null;
+        ip: string | null;
+        status: string;
+        enabled: boolean;
+        lastHeartbeat: string | null;
+        hasApiKey: boolean;
+        createdAt: string;
+        updatedAt: string;
+      };
+    }>(`/api/agents/${encodeURIComponent(agentId)}`, {
+      method: "PATCH",
+      body: JSON.stringify(patch),
+    }),
+
+  rotateAgentKey: (agentId: string) =>
+    http<{ ok: boolean; agentId: string; apiKey: string; message: string }>(
+      `/api/agents/${encodeURIComponent(agentId)}`,
+      { method: "POST" },
+    ),
+
   sendAgentHeartbeat: (agentId: string, apiKey: string, payload: {
     hostname?: string;
     os?: string;
