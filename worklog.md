@@ -2640,3 +2640,65 @@ Demo mode, live mode, detection, alerts, correlation, OFFENSE/DEFENSE, history, 
 
 ## 16. Exact next phase
 **Phase E (Real Nmap Verification):** Install nmap on a host, run a real assessment against an authorized lab target, verify scanner="nmap", XML parsing, service info persistence. Then: run as a Windows service (NSSM/scheduled task), add agent heartbeat history view, and consider a Windows Defender/Firewall event collector.
+
+---
+Task ID: TELEMETRY-4 (Windows Agent + Agent Management + Configurable Heartbeat — verification round)
+Agent: orchestrator (main)
+Task: Verify all prior implementations are intact, run E2E tests, confirm no regressions
+
+## Inspection results (current repository state)
+- **Services:** Next.js (:3000), monitor-service (:3003), gateway (:81) — all HTTP 200
+- **Lint:** 0 errors, 0 warnings
+- **Windows Agent files:** `agents/windows/agent.ps1`, `config.example.ps1`, `README.md` — all present
+- **Agent Management UI:** `src/components/soc/agent-management-panel.tsx` — present, integrated in Settings
+- **Agent API routes:** register, heartbeat, [agentId] (GET/PATCH/POST) — all present
+- **Configurable heartbeat:** `agentHeartbeatIntervalSec`, `agentDegradedAfterSec`, `agentOfflineAfterSec` in constants + types + settings UI + monitor-service getAgentThresholds()
+- **Frontend fixes:** use-browser-notifications.ts (useState + useEffect pattern), use-keyboard-shortcuts.ts (instanceof Element guard), timeline-scrubber.tsx (instanceof Element guard) — all intact
+- **nmap:** NOT installed in sandbox
+- **Existing agents:** 4 registered (agent-win-001 Windows OFFLINE, agent-win-e2e Windows ONLINE, agent-lab-001 Linux OFFLINE, agent-test-001 Linux OFFLINE)
+
+## E2E test results (all PASS)
+1. Windows agent registration: POST /api/agents/register → apiKey returned ✓
+2. Windows heartbeat: POST /api/agents/heartbeat → status=ONLINE ✓
+3. Live session: mode=live → no demo fallback ✓
+4. Windows 4625 event ingestion: POST /api/ingest → dataSource=REAL, parser=windows_event_log_v1 ✓
+5. Event persisted: dataSource=REAL, isDemo=false, os=Windows, hostname=WIN-E2E, username=admin ✓
+6. Detection on Windows events: 5 × 4625 → 2 alerts (Service Access Anomaly + New Source IP) ✓
+7. OFFENSE/DEFENSE: 2 offense + 2 defense scenarios generated dynamically ✓
+8. Agent disable: PATCH → enabled=false → ingestion rejected (401) ✓
+9. Agent re-enable: PATCH → enabled=true → ingestion works ✓
+10. Key rotation: POST → new key generated, old key invalidated ✓
+11. Old key rejected: 401 after rotation ✓
+12. New key works: heartbeat with new key → ok=true ✓
+13. Demo mode regression: demo events flow, isDemo=true, alerts generate ✓
+14. Browser: no hydration errors, no TypeErrors, no console errors on fresh reload ✓
+15. Keyboard shortcuts: 1→Live Monitor, 2→Offense, 3→Defense all work ✓
+16. Settings UI: Agents section visible with agent list, status badges, heartbeat config inputs ✓
+17. Assessment scanner metadata: scanner="mock", scanError="nmap not installed" ✓
+
+## Windows E2E verification status
+**PASS (via API simulation).** The Windows agent PowerShell script (`agents/windows/agent.ps1`) sends events to POST /api/ingest with the same authentication, normalization, and detection pipeline as the Linux agent. The end-to-end flow was verified using curl to simulate Windows Event 4625 ingestion with X-Agent-ID/X-Agent-Key authentication. The event was correctly labeled dataSource=REAL, os=Windows, sourceType=windows_event_log.
+
+**Note:** An actual Windows endpoint was not available in the sandbox. The PowerShell agent script was validated for syntax and API contract. Real Windows endpoint E2E verification is pending deployment on a Windows machine.
+
+## Nmap verification status
+**NMAP NOT AVAILABLE — REAL NMAP VERIFICATION PENDING.** nmap is not installed in the sandbox. The real nmap implementation exists (scanner.ts: runRealNmap + parseNmapXml) and falls back to mock when nmap is not found. Assessment DB rows correctly record `scanner: "mock"` + `scanError: "nmap not installed"`.
+
+## Regression results
+ALL existing functionality intact:
+- Demo Mode ✓, Live Mode ✓, Linux Agent ✓, Real ingestion ✓, RawLog ✓
+- Detection ✓, Alerts ✓, Correlation ✓, OFFENSE ✓, DEFENSE ✓
+- History ✓, Reports ✓, Webhooks ✓, Delivery History ✓
+- Threat Map ✓, Risk Gauge ✓, MITRE Matrix ✓, IP Reputation ✓
+- Timeline ✓, Compare ✓, Exports ✓, Custom Rules ✓
+- Command Palette ✓, Keyboard shortcuts ✓, Browser notifications ✓
+- SSR/hydration ✓ (no errors on fresh reload)
+
+## Remaining limitations
+- nmap not installed → assessment uses mock (real nmap code pending verification)
+- Windows agent not tested on an actual Windows endpoint (PowerShell syntax validated, API contract verified via curl)
+- Windows Event Log collection requires Administrator privileges on the target Windows machine
+- Health check interval (30s) still hard-coded (thresholds are configurable; interval is not)
+
+## Exact next phase
+Install nmap on a host for real nmap verification. Deploy Windows agent on a Windows endpoint for real E2E. Add Windows Defender/Firewall event collectors. Add agent heartbeat history view.
