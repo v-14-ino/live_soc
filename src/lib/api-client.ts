@@ -248,6 +248,18 @@ export const api = {
       { method: "POST" },
     ),
 
+  getAgentHeartbeats: (agentId: string, limit = 50) =>
+    http<{
+      agentId: string;
+      heartbeats: Array<{
+        id: string;
+        timestamp: string;
+        status: string;
+        metadata: string | null;
+      }>;
+      total: number;
+    }>(`/api/agents/${encodeURIComponent(agentId)}/heartbeats?limit=${limit}`),
+
   sendAgentHeartbeat: (agentId: string, apiKey: string, payload: {
     hostname?: string;
     os?: string;

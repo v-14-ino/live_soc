@@ -2702,3 +2702,67 @@ ALL existing functionality intact:
 
 ## Exact next phase
 Install nmap on a host for real nmap verification. Deploy Windows agent on a Windows endpoint for real E2E. Add Windows Defender/Firewall event collectors. Add agent heartbeat history view.
+
+---
+Task ID: TELEMETRY-5 (Real Environment Validation — Windows Defender/Firewall + Heartbeat History + Nmap Status)
+Agent: orchestrator (main)
+Task: Verify nmap availability, inspect/fix Windows agent, add Defender+Firewall collectors, heartbeat history, regression
+
+## 1. Nmap status
+**NMAP NOT AVAILABLE — REAL NMAP VERIFICATION PENDING.**
+nmap is not installed in the sandbox. The real nmap implementation exists (scanner.ts: runRealNmap + parseNmapXml) and falls back to mock when nmap is not found. Assessment DB rows correctly record `scanner: "mock"` + `scanError: "nmap not installed"`. To verify real nmap: install nmap (`apt install nmap` or equivalent), then start a monitoring session — the scanner will automatically use real nmap and record `scanner: "nmap"`.
+
+## 2. Nmap real verification result
+PENDING — nmap not installed in the sandbox.
+
+## 3. Windows agent deployment status
+The Windows agent PowerShell script (`agents/windows/agent.ps1`) is complete and ready for deployment. It has been updated with:
+- **Bug fix:** State management — `Load-State` now correctly converts PSCustomObject (from JSON) to Hashtable for `.ContainsKey()` compatibility. Added `Get-State-Val` helper.
+- **Bug fix:** WebException catch — now properly checks `$_.Exception.Response` before accessing StatusCode.
+- **New:** Windows Defender collector (Event IDs 1116, 1117, 5007) from `Microsoft-Windows-Windows Defender/Operational` log
+- **New:** Windows Firewall collector (Event IDs 5152, 5154, 5157, 2004) from `Microsoft-Windows-Windows Firewall With Advanced Security/Firewall` log
+- **New:** Graceful unavailability handling — Defender/Firewall logs that don't exist are silently skipped with a one-time warning
+- **Updated:** README with comprehensive deployment guide (prerequisites, registration, config, running, permissions, testing, troubleshooting, running as service)
+
+**Not deployed on an actual Windows endpoint** — the sandbox is Linux only.
+
+## 4. Actual Windows E2E result
+PENDING — no Windows endpoint available in the sandbox. The API contract was verified via curl simulation (see test results below).
+
+## 5. Windows Security telemetry result
+VERIFIED VIA API SIMULATION — `sourceType: windows_event_log`, `parser: windows_event_log_v1`, `dataSource: REAL`. Events correctly normalized with os=Windows, hostname, username.
+
+## 6. Windows Defender result
+VERIFIED VIA API SIMULATION — `sourceType: windows_defender`, `parser: windows_defender_v1`, `dataSource: REAL`, `eventCategory: endpoint_security`. Added dedicated normalizer parser. The PowerShell collector reads from `Microsoft-Windows-Windows Defender/Operational` log (Event IDs 1116/1117/5007).
+
+## 7. Windows Firewall result
+VERIFIED VIA API SIMULATION — `sourceType: windows_firewall`, `parser: windows_firewall_v1`, `dataSource: REAL`, `eventCategory: firewall`. Added dedicated normalizer parser. The PowerShell collector reads from `Microsoft-Windows-Windows Firewall With Advanced Security/Firewall` log (Event IDs 5152/5154/5157/2004).
+
+## 8. Heartbeat history result
+VERIFIED — New API endpoint `GET /api/agents/[agentId]/heartbeats` returns heartbeat history (timestamp, status, metadata). New UI: Heartbeat History dialog accessible via History button (clock icon) on each agent card in Settings → Agents. Shows colored status dots (ONLINE=green, DEGRADED=amber, OFFLINE=red) with timestamps.
+
+## 9. Tests executed (all PASS)
+1. Agent registration: POST /api/agents/register → apiKey ✓
+2. Heartbeat: POST /api/agents/heartbeat → ONLINE ✓
+3. Heartbeat history API: GET /api/agents/[id]/heartbeats → 1 heartbeat ✓
+4. Live session: mode=live → no demo fallback ✓
+5. Windows 4625 ingestion: dataSource=REAL, parser=windows_event_log_v1 ✓
+6. Windows Defender ingestion: dataSource=REAL, parser=windows_defender_v1 ✓
+7. Windows Firewall ingestion: dataSource=REAL, parser=windows_firewall_v1 ✓
+8. Demo mode regression: isDemo=true, events flow ✓
+9. Browser: no hydration errors, no TypeErrors, console clean ✓
+10. Keyboard shortcuts: 1→Live Monitor, 2→Offense ✓
+11. Lint: 0 errors, 0 warnings ✓
+
+## 10. Regression results: ALL PASS
+Demo Mode, Live Mode, Linux Agent, Real ingestion, RawLog, Detection, Alerts, Correlation, OFFENSE, DEFENSE, History, Reports, Webhooks, Delivery History, Threat Map, Risk Gauge, MITRE Matrix, IP Reputation, Timeline, Compare, Exports, Custom Rules, Command Palette, Keyboard shortcuts, Browser notifications, SSR/hydration — all functional.
+
+## 11. Remaining limitations
+- nmap not installed → assessment uses mock (real nmap code pending verification)
+- Windows agent not tested on actual Windows endpoint (PowerShell validated for syntax + API contract)
+- Windows Defender/Firewall collectors not tested on actual Windows (normalizer parsers verified via API simulation)
+- Health check interval (30s) still hard-coded (thresholds are configurable)
+- Agent heartbeat history shows status + timestamp but not IP/version per-heartbeat (the Heartbeat model stores metadata but the agent doesn't currently include IP/version in heartbeats)
+
+## 12. Exact next phase
+Deploy Windows agent on an actual Windows endpoint for real E2E verification. Install nmap on a host for real nmap assessment verification. Add per-heartbeat IP/version storage. Add Windows Defender/Firewall availability status to the telemetry sources panel.

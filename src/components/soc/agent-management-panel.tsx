@@ -5,6 +5,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
+import { ScrollArea } from "@/components/ui/scroll-area";
 import {
   Dialog,
   DialogContent,
@@ -34,6 +35,7 @@ import {
   Loader2,
   Trash2,
   RefreshCw,
+  History,
 } from "lucide-react";
 import { toast } from "sonner";
 
@@ -78,6 +80,7 @@ export function AgentManagementPanel() {
   const [newApiKey, setNewApiKey] = useState<string | null>(null);
   const [rotatingId, setRotatingId] = useState<string | null>(null);
   const [confirmRotate, setConfirmRotate] = useState<string | null>(null);
+  const [historyAgent, setHistoryAgent] = useState<AgentInfo | null>(null);
 
   const fetchAgents = useCallback(async () => {
     try {
@@ -223,6 +226,15 @@ export function AgentManagementPanel() {
                       size="sm"
                       variant="ghost"
                       className="h-7 w-7 p-0"
+                      onClick={() => setHistoryAgent(agent)}
+                      title="View heartbeat history"
+                    >
+                      <History className="h-3 w-3" />
+                    </Button>
+                    <Button
+                      size="sm"
+                      variant="ghost"
+                      className="h-7 w-7 p-0"
                       onClick={() => setConfirmRotate(agent.agentId)}
                       disabled={rotatingId === agent.agentId}
                       title="Rotate API key"
@@ -275,6 +287,13 @@ export function AgentManagementPanel() {
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
+
+      {historyAgent && (
+        <HeartbeatHistoryDialog
+          agent={historyAgent}
+          onClose={() => setHistoryAgent(null)}
+        />
+      )}
     </div>
   );
 }
@@ -458,6 +477,100 @@ function ApiKeyDisplayDialog({ apiKey, onClose }: { apiKey: string; onClose: () 
         <DialogFooter className="border-t border-border/60 bg-card/30 px-5 py-3">
           <Button size="sm" onClick={onClose}>I&apos;ve saved the key</Button>
         </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+// ============================================================
+// Heartbeat History Dialog (Phase 9)
+// ============================================================
+
+function HeartbeatHistoryDialog({ agent, onClose }: { agent: AgentInfo; onClose: () => void }) {
+  const [heartbeats, setHeartbeats] = useState<Array<{ id: string; timestamp: string; status: string; metadata: string | null }>>([]);
+  const [total, setTotal] = useState(0);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await api.getAgentHeartbeats(agent.agentId, 50);
+        if (!cancelled) {
+          setHeartbeats(res.heartbeats);
+          setTotal(res.total);
+        }
+      } catch {
+        if (!cancelled) toast.error("Failed to load heartbeat history");
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [agent.agentId]);
+
+  const STATUS_COLORS: Record<string, string> = {
+    ONLINE: "var(--soc-success)",
+    DEGRADED: "var(--soc-medium)",
+    OFFLINE: "var(--soc-critical)",
+  };
+
+  return (
+    <Dialog open={true} onOpenChange={() => onClose()}>
+      <DialogContent className="max-h-[80vh] max-w-2xl overflow-hidden p-0 gap-0">
+        <DialogHeader className="border-b border-border/60 px-5 py-4">
+          <DialogTitle className="flex items-center gap-2 font-mono-data text-sm uppercase tracking-wider">
+            <History className="h-4 w-4 text-[color:var(--soc-low)]" />
+            Heartbeat History
+          </DialogTitle>
+          <DialogDescription className="text-xs">
+            {agent.name} ({agent.agentId}) — {total} total heartbeats
+          </DialogDescription>
+        </DialogHeader>
+        <ScrollArea className="h-[calc(80vh-120px)] soc-scrollbar">
+          <div className="p-4">
+            {loading ? (
+              <div className="space-y-1.5">
+                {[1, 2, 3, 4, 5].map((i) => (
+                  <div key={i} className="h-8 animate-pulse rounded-md bg-muted/30" />
+                ))}
+              </div>
+            ) : heartbeats.length === 0 ? (
+              <div className="flex flex-col items-center justify-center py-8">
+                <History className="h-8 w-8 text-muted-foreground/30" />
+                <p className="mt-2 font-mono-data text-[10px] uppercase tracking-wider text-muted-foreground/60">
+                  No heartbeats recorded
+                </p>
+              </div>
+            ) : (
+              <div className="space-y-1">
+                {heartbeats.map((hb) => {
+                  const color = STATUS_COLORS[hb.status] ?? "var(--muted-foreground)";
+                  return (
+                    <div
+                      key={hb.id}
+                      className="flex items-center justify-between rounded-md border border-border/30 bg-card/20 px-3 py-1.5"
+                    >
+                      <span
+                        className="inline-block h-2 w-2 rounded-full shrink-0"
+                        style={{ backgroundColor: color }}
+                      />
+                      <span
+                        className="font-mono-data text-[10px] font-bold uppercase tracking-wider shrink-0 w-20"
+                        style={{ color }}
+                      >
+                        {hb.status}
+                      </span>
+                      <span className="font-mono-data text-[10px] text-foreground/70 flex-1 truncate">
+                        {new Date(hb.timestamp).toLocaleString("en-US")}
+                      </span>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+        </ScrollArea>
       </DialogContent>
     </Dialog>
   );

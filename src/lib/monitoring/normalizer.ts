@@ -359,6 +359,58 @@ export function normalizePayload(payload: IngestPayload): NormalizeResult {
         parser = "windows_event_log_v1";
         event = parseWindowsEventLog(payload, warnings);
         break;
+      case "windows_defender":
+        parser = "windows_defender_v1";
+        event = {
+          id: "", eventId: "", sessionId: null,
+          timestamp: payload.timestamp || new Date().toISOString(),
+          source: "system_logs",
+          sourceIp: payload.sourceIp ?? null,
+          sourcePort: null,
+          destIp: payload.destinationIp ?? null,
+          destPort: payload.destinationPort ?? null,
+          protocol: null,
+          eventType: payload.eventType || "defender_event",
+          severity: payload.severity ?? "medium",
+          status: "new",
+          message: payload.message || `Windows Defender: ${payload.eventType}`,
+          isDemo: false,
+          dataSource: "REAL",
+          receivedAt: new Date().toISOString(),
+          hostId: null,
+          hostname: payload.hostname ?? null,
+          os: "Windows",
+          username: null,
+          eventCategory: "endpoint_security",
+          raw: payload.metadata ?? null,
+        };
+        break;
+      case "windows_firewall":
+        parser = "windows_firewall_v1";
+        event = {
+          id: "", eventId: "", sessionId: null,
+          timestamp: payload.timestamp || new Date().toISOString(),
+          source: "firewall",
+          sourceIp: payload.sourceIp ?? null,
+          sourcePort: payload.sourcePort ?? null,
+          destIp: payload.destinationIp ?? null,
+          destPort: payload.destinationPort ?? null,
+          protocol: payload.protocol ?? null,
+          eventType: payload.eventType || "firewall_event",
+          severity: payload.severity ?? "medium",
+          status: "new",
+          message: payload.message || `Windows Firewall: ${payload.eventType}`,
+          isDemo: false,
+          dataSource: "REAL",
+          receivedAt: new Date().toISOString(),
+          hostId: null,
+          hostname: payload.hostname ?? null,
+          os: "Windows",
+          username: null,
+          eventCategory: "firewall",
+          raw: payload.metadata ?? null,
+        };
+        break;
       case "firewall":
       case "iptables":
         parser = "firewall_v1";
